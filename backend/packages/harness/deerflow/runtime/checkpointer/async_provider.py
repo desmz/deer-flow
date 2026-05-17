@@ -64,13 +64,19 @@ async def _async_checkpointer(config) -> AsyncIterator[Checkpointer]:
     if config.type == "postgres":
         try:
             from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+            from psycopg_pool import AsyncConnectionPool
         except ImportError as exc:
             raise ImportError(POSTGRES_INSTALL) from exc
 
         if not config.connection_string:
             raise ValueError(POSTGRES_CONN_REQUIRED)
 
-        async with AsyncPostgresSaver.from_conn_string(config.connection_string) as saver:
+        async with AsyncConnectionPool(
+            conninfo=config.connection_string,
+            max_size=20,
+            kwargs={"autocommit": True, "prepare_threshold": 0},
+        ) as pool:
+            saver = AsyncPostgresSaver(pool)
             await saver.setup()
             yield saver
         return
@@ -108,13 +114,19 @@ async def _async_checkpointer_from_database(db_config) -> AsyncIterator[Checkpoi
     if db_config.backend == "postgres":
         try:
             from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+            from psycopg_pool import AsyncConnectionPool
         except ImportError as exc:
             raise ImportError(POSTGRES_INSTALL) from exc
 
         if not db_config.postgres_url:
             raise ValueError("database.postgres_url is required for the postgres backend")
 
-        async with AsyncPostgresSaver.from_conn_string(db_config.postgres_url) as saver:
+        async with AsyncConnectionPool(
+            conninfo=db_config.postgres_url,
+            max_size=20,
+            kwargs={"autocommit": True, "prepare_threshold": 0},
+        ) as pool:
+            saver = AsyncPostgresSaver(pool)
             await saver.setup()
             yield saver
         return

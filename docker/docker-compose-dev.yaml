@@ -2,6 +2,7 @@
 # Usage: docker-compose -f docker-compose-dev.yaml up --build
 #
 # Services:
+#   - postgres: PostgreSQL database (required when config.yaml uses database.backend: postgres)
 #   - nginx: Reverse proxy (port 2026)
 #   - frontend: Frontend Next.js dev server (port 3000)
 #   - gateway: Backend Gateway API + agent runtime (port 8001)
@@ -13,6 +14,30 @@
 # Access: http://localhost:2026
 
 services:
+  # ── PostgreSQL Database ────────────────────────────────────────────────
+  # Required when config.yaml has database.backend: postgres.
+  # Credentials must match DATABASE_URL in .env (or the override below).
+  postgres:
+    image: postgres:16-alpine
+    container_name: deer-flow-postgres
+    environment:
+      - POSTGRES_USER=deerflow
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=deerflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - deer-flow-dev
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U deerflow -d deerflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
   # ── Sandbox Provisioner ────────────────────────────────────────────────
   # Manages per-sandbox Pod + Service lifecycle in the host Kubernetes
   # cluster via the K8s API.
@@ -171,8 +196,15 @@ services:
       - DEER_FLOW_HOST_BASE_DIR=${DEER_FLOW_ROOT}/backend/.deer-flow
       - DEER_FLOW_HOST_SKILLS_PATH=${DEER_FLOW_ROOT}/skills
       - DEER_FLOW_SANDBOX_HOST=host.docker.internal
+      # Override DATABASE_URL so the gateway reaches the postgres service by
+      # its Docker network hostname rather than localhost (which resolves to
+      # the container itself and has no PostgreSQL server).
+      - DATABASE_URL=postgresql://deerflow:password@postgres:5432/deerflow
     env_file:
       - ../.env
+    depends_on:
+      postgres:
+        condition: service_healthy
     extra_hosts:
       # For Linux: map host.docker.internal to host gateway
       - "host.docker.internal:host-gateway"
@@ -185,6 +217,7 @@ volumes:
   # image build are not shadowed by the host backend/ directory mount.
   gateway-venv:
   gateway-uv-cache:
+  postgres-data:
 
 networks:
   deer-flow-dev:
