@@ -634,7 +634,7 @@
 
 | Section | Title | Status | Notes File |
 |---------|-------|--------|------------|
-| 01 | Product Overview & Positioning | [ ] | |
+| 01 | Product Overview & Positioning | [x] | `architecture/01-product-overview.md` |
 | 02 | System Architecture | [ ] | |
 | 03 | Project Setup & Tooling | [ ] | |
 | 04 | Infrastructure & DevOps | [ ] | |
