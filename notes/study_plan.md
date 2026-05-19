@@ -4,11 +4,13 @@
 > **Purpose:** Drive the `/study` custom command. Each section = one study session.
 > **Status legend:** `[ ]` Not started · `[~]` In progress · `[x]` Complete
 
+> **Key files table status:** `[ ]` not read · `[~]` reading · `[x]` annotated
+
 ---
 
 ## Section 01 — Product Overview & Positioning
 
-**Goal:** Understand what DeerFlow *is* before touching any code.
+**Goal:** Understand what DeerFlow _is_ before touching any code.
 
 - What problem does it solve? Who is the target user?
 - How does it differentiate from other agent frameworks (AutoGen, CrewAI, OpenDevin)?
@@ -16,9 +18,15 @@
 - Official website, README, release notes, CONTRIBUTING.md, SECURITY.md
 
 **Key files:**
-- `README.md`, `README_zh.md`
-- `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`
-- `Install.md`
+
+| Path                 | Status | Notes                                                    |
+| -------------------- | ------ | -------------------------------------------------------- |
+| `README.md`          | `[x]`  | Project overview, setup instructions, feature highlights |
+| `README_zh.md`       | `[x]`  | Chinese-language version of README                       |
+| `CONTRIBUTING.md`    | `[x]`  | Contribution guidelines and PR process                   |
+| `SECURITY.md`        | `[x]`  | Security policy and vulnerability reporting              |
+| `CODE_OF_CONDUCT.md` | `[x]`  | Community standards                                      |
+| `Install.md`         | `[x]`  | Detailed installation walkthrough                        |
 
 ---
 
@@ -34,10 +42,13 @@
 - Request lifecycle: browser → Nginx → Gateway → RunManager → LangGraph → StreamBridge → SSE → browser
 
 **Key files:**
-- `backend/CLAUDE.md` (architecture section)
-- `backend/langgraph.json`
-- `docker/nginx/` config
-- `backend/packages/harness/deerflow/runtime/`
+
+| Path                                         | Status | Notes                                                                                                                                                         |
+| -------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `backend/CLAUDE.md`                          | `[x]`  | Architecture reference: component map, port assignments, request lifecycle                                                                                    |
+| `backend/langgraph.json`                     | `[ ]`  | LangGraph graph definition: nodes, edges, entrypoints                                                                                                         |
+| `docker/nginx/`                              | `[x]`  | Nginx reverse proxy config: routing rules for port 2026 → 8001/3000                                                                                           |
+| `backend/packages/harness/deerflow/runtime/` | `[ ]`  | Runtime package (overview depth): journal.py, converters.py, serialization.py, user_context.py + 5 subdirs (checkpointer, events, runs, store, stream_bridge) |
 
 ---
 
@@ -54,11 +65,21 @@
 - VS Code workspace file (`deer-flow.code-workspace`)
 
 **Key files:**
-- `Makefile`, `backend/Makefile`, `frontend/Makefile`
-- `backend/pyproject.toml`, `backend/packages/harness/pyproject.toml`
-- `frontend/package.json`, `frontend/pnpm-workspace.yaml`
-- `config.yaml`, `extensions_config.json`
-- `scripts/setup_wizard.py`, `scripts/doctor.py`, `scripts/configure.py`
+
+| Path                                      | Status | Notes                                                               |
+| ----------------------------------------- | ------ | ------------------------------------------------------------------- |
+| `Makefile`                                | `[ ]`  | Root-level build targets: check, install, dev, start, stop          |
+| `backend/Makefile`                        | `[ ]`  | Backend-specific build targets                                      |
+| `frontend/Makefile`                       | `[ ]`  | Frontend-specific build targets                                     |
+| `backend/pyproject.toml`                  | `[ ]`  | Backend Python package metadata, uv dependency config, ruff linting |
+| `backend/packages/harness/pyproject.toml` | `[ ]`  | Harness package metadata and dependencies                           |
+| `frontend/package.json`                   | `[ ]`  | Frontend npm package config, scripts, and dependencies              |
+| `frontend/pnpm-workspace.yaml`            | `[ ]`  | pnpm monorepo workspace config                                      |
+| `config.yaml`                             | `[ ]`  | Live YAML config file (models, auth, extensions)                    |
+| `extensions_config.json`                  | `[ ]`  | MCP servers and skills wiring registry                              |
+| `scripts/setup_wizard.py`                 | `[ ]`  | Interactive setup wizard for first-time config                      |
+| `scripts/doctor.py`                       | `[ ]`  | Checks system health and diagnoses config issues                    |
+| `scripts/configure.py`                    | `[ ]`  | Programmatic config writer used by setup_wizard                     |
 
 ---
 
@@ -76,12 +97,17 @@
 - Config upgrade path (`scripts/config-upgrade.sh`)
 
 **Key files:**
-- `docker/docker-compose-dev.yaml`, `docker/docker-compose.yaml`
-- `docker/nginx/`
-- `docker/dev-entrypoint.sh`
-- `docker/provisioner/`
-- `scripts/deploy.sh`, `scripts/serve.sh`
-- `.github/workflows/` (if present)
+
+| Path                             | Status | Notes                                                   |
+| -------------------------------- | ------ | ------------------------------------------------------- |
+| `docker/docker-compose-dev.yaml` | `[ ]`  | Development Docker Compose stack                        |
+| `docker/docker-compose.yaml`     | `[ ]`  | Production Docker Compose stack                         |
+| `docker/nginx/`                  | `[ ]`  | Nginx config: path rewriting, /api/langgraph/\* routing |
+| `docker/dev-entrypoint.sh`       | `[ ]`  | Container bootstrap script for dev mode                 |
+| `docker/provisioner/`            | `[ ]`  | Provisioner container: initial DB setup and seeding     |
+| `scripts/deploy.sh`              | `[ ]`  | Production deployment script                            |
+| `scripts/serve.sh`               | `[ ]`  | Start the production server                             |
+| `.github/workflows/`             | `[ ]`  | CI/CD pipeline definitions (if present)                 |
 
 ---
 
@@ -98,11 +124,14 @@
 - Interaction between Gateway and the LangGraph runtime (how `/api/langgraph/*` is handled)
 
 **Key files:**
-- `backend/app/gateway/app.py`
-- `backend/app/gateway/routers/`
-- `backend/app/gateway/deps.py`
-- `backend/app/gateway/services.py`
-- `backend/app/gateway/csrf_middleware.py`
+
+| Path                                     | Status | Notes                                                                 |
+| ---------------------------------------- | ------ | --------------------------------------------------------------------- |
+| `backend/app/gateway/app.py`             | `[ ]`  | FastAPI app bootstrap: lifespan, middleware, router mounting          |
+| `backend/app/gateway/routers/`           | `[ ]`  | All HTTP route handlers (agents, auth, channels, runs, threads, etc.) |
+| `backend/app/gateway/deps.py`            | `[ ]`  | Dependency injection: config and services flowing into handlers       |
+| `backend/app/gateway/services.py`        | `[ ]`  | Service abstraction layer                                             |
+| `backend/app/gateway/csrf_middleware.py` | `[ ]`  | CSRF protection middleware                                            |
 
 ---
 
@@ -122,11 +151,14 @@
 - Credential file (`auth/credential_file.py`)
 
 **Key files:**
-- `backend/app/gateway/auth/`
-- `backend/app/gateway/auth_middleware.py`
-- `backend/app/gateway/langgraph_auth.py`
-- `backend/app/gateway/authz.py`
-- `backend/app/gateway/internal_auth.py`
+
+| Path                                     | Status | Notes                                                              |
+| ---------------------------------------- | ------ | ------------------------------------------------------------------ |
+| `backend/app/gateway/auth/`              | `[ ]`  | Auth providers, local auth, JWT, password hashing, credential file |
+| `backend/app/gateway/auth_middleware.py` | `[ ]`  | Per-request authentication enforcement                             |
+| `backend/app/gateway/langgraph_auth.py`  | `[ ]`  | Translates Gateway auth context into LangGraph identity            |
+| `backend/app/gateway/authz.py`           | `[ ]`  | Authorization rules (who can access what)                          |
+| `backend/app/gateway/internal_auth.py`   | `[ ]`  | Service-to-service auth for internal calls                         |
 
 ---
 
@@ -146,11 +178,14 @@
 - Store layer (`runtime/store/`) — key-value persistence for runtime state
 
 **Key files:**
-- `backend/packages/harness/deerflow/runtime/`
-- `backend/packages/harness/deerflow/runtime/checkpointer/`
-- `backend/packages/harness/deerflow/runtime/stream_bridge/`
-- `backend/packages/harness/deerflow/runtime/runs/`
-- `backend/packages/harness/deerflow/runtime/events/`
+
+| Path                                                       | Status | Notes                                                                              |
+| ---------------------------------------------------------- | ------ | ---------------------------------------------------------------------------------- |
+| `backend/packages/harness/deerflow/runtime/`               | `[ ]`  | Runtime package root: RunManager, journal, converters, serialization, user_context |
+| `backend/packages/harness/deerflow/runtime/checkpointer/`  | `[ ]`  | Async state persistence for LangGraph graph checkpoints                            |
+| `backend/packages/harness/deerflow/runtime/stream_bridge/` | `[ ]`  | Bridges LangGraph event stream to SSE (async_provider, memory, base)               |
+| `backend/packages/harness/deerflow/runtime/runs/`          | `[ ]`  | RunManager, worker, schemas, run store                                             |
+| `backend/packages/harness/deerflow/runtime/events/`        | `[ ]`  | Run event types, store, and pagination                                             |
 
 ---
 
@@ -165,10 +200,13 @@
 - How the agent graph nodes and edges are wired
 
 **Key files:**
-- `backend/packages/harness/deerflow/agents/factory.py`
-- `backend/packages/harness/deerflow/agents/lead_agent/`
-- `backend/packages/harness/deerflow/agents/thread_state.py`
-- `backend/packages/harness/deerflow/agents/features.py`
+
+| Path                                                       | Status | Notes                                                    |
+| ---------------------------------------------------------- | ------ | -------------------------------------------------------- |
+| `backend/packages/harness/deerflow/agents/factory.py`      | `[ ]`  | Constructs the LangGraph agent graph                     |
+| `backend/packages/harness/deerflow/agents/lead_agent/`     | `[ ]`  | Lead agent: system prompt, agent definition, node wiring |
+| `backend/packages/harness/deerflow/agents/thread_state.py` | `[ ]`  | Full state schema flowing through the LangGraph graph    |
+| `backend/packages/harness/deerflow/agents/features.py`     | `[ ]`  | Feature flags controlling agent behaviour                |
 
 ---
 
@@ -198,8 +236,11 @@
 - Ordering and composition of the middleware chain
 
 **Key files:**
-- `backend/packages/harness/deerflow/agents/middlewares/`
-- All `test_*_middleware.py` files for reference
+
+| Path                                                    | Status | Notes                                                                             |
+| ------------------------------------------------------- | ------ | --------------------------------------------------------------------------------- |
+| `backend/packages/harness/deerflow/agents/middlewares/` | `[ ]`  | All 17 middleware implementations wrapping the lead agent                         |
+| `backend/tests/test_*_middleware.py`                    | `[ ]`  | Unit tests illustrating each middleware's behaviour and edge cases (glob pattern) |
 
 ---
 
@@ -217,8 +258,11 @@
 - Migration path for legacy installations
 
 **Key files:**
-- `backend/packages/harness/deerflow/agents/memory/`
-- `backend/tests/test_memory_*.py`
+
+| Path                                               | Status | Notes                                             |
+| -------------------------------------------------- | ------ | ------------------------------------------------- |
+| `backend/packages/harness/deerflow/agents/memory/` | `[ ]`  | Memory subsystem: updater, queue, prompt, storage |
+| `backend/tests/test_memory_*.py`                   | `[ ]`  | Memory unit and integration tests (glob pattern)  |
 
 ---
 
@@ -235,8 +279,11 @@
 - Security: prompt injection prevention, timeout config, skill filtering
 
 **Key files:**
-- `backend/packages/harness/deerflow/subagents/`
-- `backend/tests/test_subagent_*.py`
+
+| Path                                           | Status | Notes                                                          |
+| ---------------------------------------------- | ------ | -------------------------------------------------------------- |
+| `backend/packages/harness/deerflow/subagents/` | `[ ]`  | Subagent executor, registry, config, token collector, builtins |
+| `backend/tests/test_subagent_*.py`             | `[ ]`  | Subagent tests (glob pattern)                                  |
 
 ---
 
@@ -254,8 +301,11 @@
 - Tool output truncation (truncation middleware + config)
 
 **Key files:**
-- `backend/packages/harness/deerflow/tools/`
-- `backend/tests/test_tool_*.py`
+
+| Path                                       | Status | Notes                                                   |
+| ------------------------------------------ | ------ | ------------------------------------------------------- |
+| `backend/packages/harness/deerflow/tools/` | `[ ]`  | Tool types, registry, sync, skill manage tool, builtins |
+| `backend/tests/test_tool_*.py`             | `[ ]`  | Tools unit tests (glob pattern)                         |
 
 ---
 
@@ -276,9 +326,12 @@
 - The `extensions_config.json` wiring
 
 **Key files:**
-- `backend/packages/harness/deerflow/skills/`
-- `skills/public/`
-- `backend/tests/test_skills_*.py`
+
+| Path                                        | Status | Notes                                                                                          |
+| ------------------------------------------- | ------ | ---------------------------------------------------------------------------------------------- |
+| `backend/packages/harness/deerflow/skills/` | `[ ]`  | Skills subsystem: parser, installer, security scanner, validation, tool policy, storage, types |
+| `skills/public/`                            | `[ ]`  | Bundled built-in skills (YAML definitions)                                                     |
+| `backend/tests/test_skills_*.py`            | `[ ]`  | Skills tests (glob pattern)                                                                    |
 
 ---
 
@@ -294,9 +347,12 @@
 - How `extensions_config.json` configures MCP servers
 
 **Key files:**
-- `backend/packages/harness/deerflow/mcp/`
-- `backend/app/gateway/routers/mcp.py`
-- `backend/tests/test_mcp_*.py`
+
+| Path                                     | Status | Notes                                     |
+| ---------------------------------------- | ------ | ----------------------------------------- |
+| `backend/packages/harness/deerflow/mcp/` | `[ ]`  | MCP client, tools, cache, OAuth           |
+| `backend/app/gateway/routers/mcp.py`     | `[ ]`  | HTTP router for MCP server management API |
+| `backend/tests/test_mcp_*.py`            | `[ ]`  | MCP integration tests (glob pattern)      |
 
 ---
 
@@ -316,9 +372,13 @@
 - Sandbox mode detection (Docker vs local)
 
 **Key files:**
-- `backend/packages/harness/deerflow/sandbox/`
-- `backend/packages/harness/deerflow/community/aio_sandbox/`
-- `backend/tests/test_aio_sandbox*.py`, `test_sandbox_*.py`
+
+| Path                                                       | Status | Notes                                                                         |
+| ---------------------------------------------------------- | ------ | ----------------------------------------------------------------------------- |
+| `backend/packages/harness/deerflow/sandbox/`               | `[ ]`  | Sandbox abstraction, provider, local impl, tools, middleware, security, locks |
+| `backend/packages/harness/deerflow/community/aio_sandbox/` | `[ ]`  | Remote async sandbox alternative                                              |
+| `backend/tests/test_aio_sandbox*.py`                       | `[ ]`  | AIO sandbox tests (glob pattern)                                              |
+| `backend/tests/test_sandbox_*.py`                          | `[ ]`  | Sandbox unit and security tests (glob pattern)                                |
 
 ---
 
@@ -340,8 +400,12 @@
 - Model config (`config/model_config.py`)
 
 **Key files:**
-- `backend/packages/harness/deerflow/models/`
-- `backend/tests/test_model_*.py`, `test_patched_*.py`
+
+| Path                                        | Status | Notes                                                                                   |
+| ------------------------------------------- | ------ | --------------------------------------------------------------------------------------- |
+| `backend/packages/harness/deerflow/models/` | `[ ]`  | Model factory, provider impls (Claude, OpenAI, DeepSeek, vLLM, etc.), credential loader |
+| `backend/tests/test_model_*.py`             | `[ ]`  | Model layer tests (glob pattern)                                                        |
+| `backend/tests/test_patched_*.py`           | `[ ]`  | Provider-specific patch tests (glob pattern)                                            |
 
 ---
 
@@ -375,8 +439,12 @@
 - Config versioning and upgrade path
 
 **Key files:**
-- `backend/packages/harness/deerflow/config/`
-- `config.yaml`, `config.example.yaml`
+
+| Path                                        | Status | Notes                                                                                                       |
+| ------------------------------------------- | ------ | ----------------------------------------------------------------------------------------------------------- |
+| `backend/packages/harness/deerflow/config/` | `[ ]`  | All config modules: agents, database, extensions, guardrails, memory, model, sandbox, skills, tracing, etc. |
+| `config.yaml`                               | `[ ]`  | Live config file — the user-facing face of the config system                                                |
+| `config.example.yaml`                       | `[ ]`  | Annotated example showing all available config options                                                      |
 
 ---
 
@@ -394,8 +462,13 @@
 - SQLite as the default database
 
 **Key files:**
-- `backend/packages/harness/deerflow/persistence/`
-- `backend/tests/test_persistence_*.py`, `test_run_repository.py`, `test_thread_meta_repo.py`
+
+| Path                                             | Status | Notes                                                                             |
+| ------------------------------------------------ | ------ | --------------------------------------------------------------------------------- |
+| `backend/packages/harness/deerflow/persistence/` | `[ ]`  | SQLAlchemy engine, base models, ORM models, repositories, migrations, JSON compat |
+| `backend/tests/test_persistence_*.py`            | `[ ]`  | Persistence layer tests (glob pattern)                                            |
+| `backend/tests/test_run_repository.py`           | `[ ]`  | Run repository tests                                                              |
+| `backend/tests/test_thread_meta_repo.py`         | `[ ]`  | Thread metadata repository tests                                                  |
 
 ---
 
@@ -419,9 +492,15 @@
   - WeCom/WeWork (`wecom.py`)
 
 **Key files:**
-- `backend/app/channels/`
-- `backend/app/gateway/routers/channels.py`
-- `backend/tests/test_channels.py`, `test_discord_channel.py`, `test_dingtalk_channel.py`, `test_feishu_parser.py`
+
+| Path                                      | Status | Notes                                                                                                  |
+| ----------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------ |
+| `backend/app/channels/`                   | `[ ]`  | All channel implementations: base, manager, message bus, service, store, commands, 7 platform adapters |
+| `backend/app/gateway/routers/channels.py` | `[ ]`  | HTTP router for channel management API                                                                 |
+| `backend/tests/test_channels.py`          | `[ ]`  | General channel tests                                                                                  |
+| `backend/tests/test_discord_channel.py`   | `[ ]`  | Discord-specific tests                                                                                 |
+| `backend/tests/test_dingtalk_channel.py`  | `[ ]`  | DingTalk-specific tests                                                                                |
+| `backend/tests/test_feishu_parser.py`     | `[ ]`  | Feishu message parser tests                                                                            |
 
 ---
 
@@ -437,8 +516,11 @@
 - `scripts/tool-error-degradation-detection.sh`
 
 **Key files:**
-- `backend/packages/harness/deerflow/tracing/`
-- `backend/tests/test_tracing_*.py`
+
+| Path                                         | Status | Notes                                               |
+| -------------------------------------------- | ------ | --------------------------------------------------- |
+| `backend/packages/harness/deerflow/tracing/` | `[ ]`  | Tracing factory: LangSmith and Langfuse integration |
+| `backend/tests/test_tracing_*.py`            | `[ ]`  | Tracing tests (glob pattern)                        |
 
 ---
 
@@ -454,11 +536,16 @@
 - InfoQuest (`community/infoquest/`) — BytePlus search/crawl
 - DuckDuckGo search (`community/ddg_search/`)
 - Image search (`community/image_search/`)
-- AIO sandbox (`community/aio_sandbox/`) — remote async sandbox
+- AIO sandbox (`community/aio_sandbox/`) — remote async sandbox alternative
 
 **Key files:**
-- `backend/packages/harness/deerflow/community/`
-- `backend/tests/test_exa_tools.py`, `test_firecrawl_tools.py`, `test_serper_tools.py`, etc.
+
+| Path                                           | Status | Notes                                                                                                       |
+| ---------------------------------------------- | ------ | ----------------------------------------------------------------------------------------------------------- |
+| `backend/packages/harness/deerflow/community/` | `[ ]`  | All community integrations: Tavily, Jina, Firecrawl, Serper, Exa, InfoQuest, DDG, image search, AIO sandbox |
+| `backend/tests/test_exa_tools.py`              | `[ ]`  | Exa neural search tool tests                                                                                |
+| `backend/tests/test_firecrawl_tools.py`        | `[ ]`  | Firecrawl web scraping tests                                                                                |
+| `backend/tests/test_serper_tools.py`           | `[ ]`  | Serper Google Search API tests                                                                              |
 
 ---
 
@@ -476,9 +563,13 @@
 - MDX support (`mdx-components.ts`, blog system)
 
 **Key files:**
-- `frontend/src/app/`
-- `frontend/next.config.js`, `frontend/tsconfig.json`
-- `frontend/src/env.js`
+
+| Path                      | Status | Notes                                                                      |
+| ------------------------- | ------ | -------------------------------------------------------------------------- |
+| `frontend/src/app/`       | `[ ]`  | Next.js App Router root: [lang] routing, auth pages, workspace, API routes |
+| `frontend/next.config.js` | `[ ]`  | Next.js build config: MDX, env vars, rewrites                              |
+| `frontend/tsconfig.json`  | `[ ]`  | TypeScript config                                                          |
+| `frontend/src/env.js`     | `[ ]`  | Environment variable schema and validation                                 |
 
 ---
 
@@ -507,7 +598,10 @@
 - Utils (`core/utils/`)
 
 **Key files:**
-- `frontend/src/core/`
+
+| Path                 | Status | Notes                                                                                                                                                                                |
+| -------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `frontend/src/core/` | `[ ]`  | All business logic modules: api, auth, threads, messages, settings, models, tasks, todos, memory, artifacts, uploads, skills, mcp, agents, config, notification, blog, rehype, utils |
 
 ---
 
@@ -525,9 +619,12 @@
 - Mobile responsive layout (`hooks/use-mobile.ts`)
 
 **Key files:**
-- `frontend/src/components/workspace/`
-- `frontend/src/app/workspace/`
-- `frontend/src/components/ai-elements/`
+
+| Path                                   | Status | Notes                                                          |
+| -------------------------------------- | ------ | -------------------------------------------------------------- |
+| `frontend/src/components/workspace/`   | `[ ]`  | Chat UI components: message list, input area, sidebar          |
+| `frontend/src/app/workspace/`          | `[ ]`  | Workspace page layout                                          |
+| `frontend/src/components/ai-elements/` | `[ ]`  | AI-specific rendering: thinking indicators, tool call displays |
 
 ---
 
@@ -543,9 +640,12 @@
 - IME-safe input (`lib/ime.ts`) — handling CJK input methods
 
 **Key files:**
-- `frontend/src/core/streamdown/`
-- `frontend/src/core/api/` (stream-mode)
-- `frontend/tests/unit/core/streamdown/plugins.test.ts`
+
+| Path                                                  | Status | Notes                              |
+| ----------------------------------------------------- | ------ | ---------------------------------- |
+| `frontend/src/core/streamdown/`                       | `[ ]`  | Custom streaming markdown renderer |
+| `frontend/src/core/api/`                              | `[ ]`  | HTTP client and SSE stream parsing |
+| `frontend/tests/unit/core/streamdown/plugins.test.ts` | `[ ]`  | Streamdown plugin unit tests       |
 
 ---
 
@@ -563,9 +663,13 @@
 - What's NOT tested and why (gaps to understand)
 
 **Key files:**
-- `backend/tests/conftest.py`
-- `frontend/vitest.config.ts`, `frontend/playwright.config.ts`
-- `frontend/tests/`
+
+| Path                            | Status | Notes                                            |
+| ------------------------------- | ------ | ------------------------------------------------ |
+| `backend/tests/conftest.py`     | `[ ]`  | pytest fixtures, test setup, async configuration |
+| `frontend/vitest.config.ts`     | `[ ]`  | Vitest unit test config                          |
+| `frontend/playwright.config.ts` | `[ ]`  | Playwright E2E test config                       |
+| `frontend/tests/`               | `[ ]`  | Frontend test suite: unit tests + E2E tests      |
 
 ---
 
@@ -585,11 +689,16 @@
 - Security notice in README
 
 **Key files:**
-- `backend/app/gateway/csrf_middleware.py`
-- `backend/packages/harness/deerflow/sandbox/security.py`
-- `backend/packages/harness/deerflow/skills/security_scanner.py`
-- `backend/packages/harness/deerflow/guardrails/`
-- `backend/tests/test_sandbox_tools_security.py`, `test_memory_prompt_injection.py`, `test_subagent_prompt_security.py`
+
+| Path                                                           | Status | Notes                                               |
+| -------------------------------------------------------------- | ------ | --------------------------------------------------- |
+| `backend/app/gateway/csrf_middleware.py`                       | `[ ]`  | CSRF protection strategy                            |
+| `backend/packages/harness/deerflow/sandbox/security.py`        | `[ ]`  | Blocked paths, commands, and sandbox security rules |
+| `backend/packages/harness/deerflow/skills/security_scanner.py` | `[ ]`  | Detects malicious patterns in skill definitions     |
+| `backend/packages/harness/deerflow/guardrails/`                | `[ ]`  | Content filtering and guardrail system              |
+| `backend/tests/test_sandbox_tools_security.py`                 | `[ ]`  | Sandbox security enforcement tests                  |
+| `backend/tests/test_memory_prompt_injection.py`                | `[ ]`  | Memory prompt injection defence tests               |
+| `backend/tests/test_subagent_prompt_security.py`               | `[ ]`  | Subagent prompt injection prevention tests          |
 
 ---
 
@@ -606,10 +715,14 @@
 - Agent Collaboration Protocol (ACP) config
 
 **Key files:**
-- `backend/packages/harness/deerflow/reflection/`
-- `backend/packages/harness/deerflow/skills/`
-- `backend/packages/harness/deerflow/community/`
-- `extensions_config.json`, `extensions_config.example.json`
+
+| Path                                            | Status | Notes                                                           |
+| ----------------------------------------------- | ------ | --------------------------------------------------------------- |
+| `backend/packages/harness/deerflow/reflection/` | `[ ]`  | Dynamic class loading via reflection resolvers                  |
+| `backend/packages/harness/deerflow/skills/`     | `[ ]`  | Primary extension mechanism: skills as YAML tool wrappers       |
+| `backend/packages/harness/deerflow/community/`  | `[ ]`  | Community search/tool providers as extension examples           |
+| `extensions_config.json`                        | `[ ]`  | Single registry for all extensions: MCP servers, skills, agents |
+| `extensions_config.example.json`                | `[ ]`  | Annotated example extension config                              |
 
 ---
 
@@ -632,34 +745,34 @@
 
 ## Study Progress Tracker
 
-| Section | Title | Status | Notes File |
-|---------|-------|--------|------------|
-| 01 | Product Overview & Positioning | [x] | `architecture/01-product-overview.md` |
-| 02 | System Architecture | [ ] | |
-| 03 | Project Setup & Tooling | [ ] | |
-| 04 | Infrastructure & DevOps | [ ] | |
-| 05 | Backend: Gateway API | [ ] | |
-| 06 | Backend: Auth & Authorization | [ ] | |
-| 07 | Backend: LangGraph Runtime | [ ] | |
-| 08 | Backend: Lead Agent | [ ] | |
-| 09 | Backend: Middleware Pipeline | [ ] | |
-| 10 | Backend: Memory System | [ ] | |
-| 11 | Backend: Subagents | [ ] | |
-| 12 | Backend: Tools System | [ ] | |
-| 13 | Backend: Skills System | [ ] | |
-| 14 | Backend: MCP Integration | [ ] | |
-| 15 | Backend: Sandbox | [ ] | |
-| 16 | Backend: Model Layer | [ ] | |
-| 17 | Backend: Config System | [ ] | |
-| 18 | Backend: Persistence Layer | [ ] | |
-| 19 | Backend: Channels | [ ] | |
-| 20 | Backend: Tracing & Observability | [ ] | |
-| 21 | Backend: Community Integrations | [ ] | |
-| 22 | Frontend: Architecture | [ ] | |
-| 23 | Frontend: Core Modules | [ ] | |
-| 24 | Frontend: Workspace UI | [ ] | |
-| 25 | Frontend: Streaming & Rendering | [ ] | |
-| 26 | Testing Strategy | [ ] | |
-| 27 | Security Design | [ ] | |
-| 28 | Extension Points | [ ] | |
-| 29 | Patterns & Design Insights | [ ] | |
+| Section | Title                            | Status | Notes File                            |
+| ------- | -------------------------------- | ------ | ------------------------------------- |
+| 01      | Product Overview & Positioning   | [x]    | `architecture/01-product-overview.md` |
+| 02      | System Architecture              | [ ]    |                                       |
+| 03      | Project Setup & Tooling          | [ ]    |                                       |
+| 04      | Infrastructure & DevOps          | [ ]    |                                       |
+| 05      | Backend: Gateway API             | [ ]    |                                       |
+| 06      | Backend: Auth & Authorization    | [ ]    |                                       |
+| 07      | Backend: LangGraph Runtime       | [ ]    |                                       |
+| 08      | Backend: Lead Agent              | [ ]    |                                       |
+| 09      | Backend: Middleware Pipeline     | [ ]    |                                       |
+| 10      | Backend: Memory System           | [ ]    |                                       |
+| 11      | Backend: Subagents               | [ ]    |                                       |
+| 12      | Backend: Tools System            | [ ]    |                                       |
+| 13      | Backend: Skills System           | [ ]    |                                       |
+| 14      | Backend: MCP Integration         | [ ]    |                                       |
+| 15      | Backend: Sandbox                 | [ ]    |                                       |
+| 16      | Backend: Model Layer             | [ ]    |                                       |
+| 17      | Backend: Config System           | [ ]    |                                       |
+| 18      | Backend: Persistence Layer       | [ ]    |                                       |
+| 19      | Backend: Channels                | [ ]    |                                       |
+| 20      | Backend: Tracing & Observability | [ ]    |                                       |
+| 21      | Backend: Community Integrations  | [ ]    |                                       |
+| 22      | Frontend: Architecture           | [ ]    |                                       |
+| 23      | Frontend: Core Modules           | [ ]    |                                       |
+| 24      | Frontend: Workspace UI           | [ ]    |                                       |
+| 25      | Frontend: Streaming & Rendering  | [ ]    |                                       |
+| 26      | Testing Strategy                 | [ ]    |                                       |
+| 27      | Security Design                  | [ ]    |                                       |
+| 28      | Extension Points                 | [ ]    |                                       |
+| 29      | Patterns & Design Insights       | [ ]    |                                       |
