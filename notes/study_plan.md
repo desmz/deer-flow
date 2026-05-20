@@ -46,9 +46,10 @@
 | Path                                         | Status | Notes                                                                                                                                                         |
 | -------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `backend/CLAUDE.md`                          | `[x]`  | Architecture reference: component map, port assignments, request lifecycle                                                                                    |
-| `backend/langgraph.json`                     | `[ ]`  | LangGraph graph definition: nodes, edges, entrypoints                                                                                                         |
+| `backend/docs/ARCHITECTURE.md`               | `[x]`  | Architecture reference: component map, port assignments, request lifecycle                                                                                    |
+| `backend/langgraph.json`                     | `[x]`  | LangGraph graph definition: nodes, edges, entrypoints                                                                                                         |
 | `docker/nginx/`                              | `[x]`  | Nginx reverse proxy config: routing rules for port 2026 → 8001/3000                                                                                           |
-| `backend/packages/harness/deerflow/runtime/` | `[ ]`  | Runtime package (overview depth): journal.py, converters.py, serialization.py, user_context.py + 5 subdirs (checkpointer, events, runs, store, stream_bridge) |
+| `backend/packages/harness/deerflow/runtime/` | `[x]`  | Runtime package (overview depth): journal.py, converters.py, serialization.py, user_context.py + 5 subdirs (checkpointer, events, runs, store, stream_bridge) |
 
 ---
 
@@ -745,34 +746,34 @@
 
 ## Study Progress Tracker
 
-| Section | Title                            | Status | Notes File                            |
-| ------- | -------------------------------- | ------ | ------------------------------------- |
-| 01      | Product Overview & Positioning   | [x]    | `architecture/01-product-overview.md` |
-| 02      | System Architecture              | [ ]    |                                       |
-| 03      | Project Setup & Tooling          | [ ]    |                                       |
-| 04      | Infrastructure & DevOps          | [ ]    |                                       |
-| 05      | Backend: Gateway API             | [ ]    |                                       |
-| 06      | Backend: Auth & Authorization    | [ ]    |                                       |
-| 07      | Backend: LangGraph Runtime       | [ ]    |                                       |
-| 08      | Backend: Lead Agent              | [ ]    |                                       |
-| 09      | Backend: Middleware Pipeline     | [ ]    |                                       |
-| 10      | Backend: Memory System           | [ ]    |                                       |
-| 11      | Backend: Subagents               | [ ]    |                                       |
-| 12      | Backend: Tools System            | [ ]    |                                       |
-| 13      | Backend: Skills System           | [ ]    |                                       |
-| 14      | Backend: MCP Integration         | [ ]    |                                       |
-| 15      | Backend: Sandbox                 | [ ]    |                                       |
-| 16      | Backend: Model Layer             | [ ]    |                                       |
-| 17      | Backend: Config System           | [ ]    |                                       |
-| 18      | Backend: Persistence Layer       | [ ]    |                                       |
-| 19      | Backend: Channels                | [ ]    |                                       |
-| 20      | Backend: Tracing & Observability | [ ]    |                                       |
-| 21      | Backend: Community Integrations  | [ ]    |                                       |
-| 22      | Frontend: Architecture           | [ ]    |                                       |
-| 23      | Frontend: Core Modules           | [ ]    |                                       |
-| 24      | Frontend: Workspace UI           | [ ]    |                                       |
-| 25      | Frontend: Streaming & Rendering  | [ ]    |                                       |
-| 26      | Testing Strategy                 | [ ]    |                                       |
-| 27      | Security Design                  | [ ]    |                                       |
-| 28      | Extension Points                 | [ ]    |                                       |
-| 29      | Patterns & Design Insights       | [ ]    |                                       |
+| Section | Title                            | Status | Notes Files                                                                                                                                                                                                               |
+| ------- | -------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 01      | Product Overview & Positioning   | [x]    | `architecture/01-product-overview.md`                                                                                                                                                                                     |
+| 02      | System Architecture              | [x]    | `architecture/02-system-architecture-runtime-package.md`<br>`glossary/nginx-cheatsheet.md`<br>`glossary/nginx-concepts.md`<br>`glossary/nginx-deerflow.md`<br>`glossary/nginx-location-matching-detailed-explaination.md` |
+| 03      | Project Setup & Tooling          | [ ]    |                                                                                                                                                                                                                           |
+| 04      | Infrastructure & DevOps          | [ ]    |                                                                                                                                                                                                                           |
+| 05      | Backend: Gateway API             | [ ]    |                                                                                                                                                                                                                           |
+| 06      | Backend: Auth & Authorization    | [ ]    |                                                                                                                                                                                                                           |
+| 07      | Backend: LangGraph Runtime       | [ ]    |                                                                                                                                                                                                                           |
+| 08      | Backend: Lead Agent              | [ ]    |                                                                                                                                                                                                                           |
+| 09      | Backend: Middleware Pipeline     | [ ]    |                                                                                                                                                                                                                           |
+| 10      | Backend: Memory System           | [ ]    |                                                                                                                                                                                                                           |
+| 11      | Backend: Subagents               | [ ]    |                                                                                                                                                                                                                           |
+| 12      | Backend: Tools System            | [ ]    |                                                                                                                                                                                                                           |
+| 13      | Backend: Skills System           | [ ]    |                                                                                                                                                                                                                           |
+| 14      | Backend: MCP Integration         | [ ]    |                                                                                                                                                                                                                           |
+| 15      | Backend: Sandbox                 | [ ]    |                                                                                                                                                                                                                           |
+| 16      | Backend: Model Layer             | [ ]    |                                                                                                                                                                                                                           |
+| 17      | Backend: Config System           | [ ]    |                                                                                                                                                                                                                           |
+| 18      | Backend: Persistence Layer       | [ ]    |                                                                                                                                                                                                                           |
+| 19      | Backend: Channels                | [ ]    |                                                                                                                                                                                                                           |
+| 20      | Backend: Tracing & Observability | [ ]    |                                                                                                                                                                                                                           |
+| 21      | Backend: Community Integrations  | [ ]    |                                                                                                                                                                                                                           |
+| 22      | Frontend: Architecture           | [ ]    |                                                                                                                                                                                                                           |
+| 23      | Frontend: Core Modules           | [ ]    |                                                                                                                                                                                                                           |
+| 24      | Frontend: Workspace UI           | [ ]    |                                                                                                                                                                                                                           |
+| 25      | Frontend: Streaming & Rendering  | [ ]    |                                                                                                                                                                                                                           |
+| 26      | Testing Strategy                 | [ ]    |                                                                                                                                                                                                                           |
+| 27      | Security Design                  | [ ]    |                                                                                                                                                                                                                           |
+| 28      | Extension Points                 | [ ]    |                                                                                                                                                                                                                           |
+| 29      | Patterns & Design Insights       | [ ]    |                                                                                                                                                                                                                           |
