@@ -62,6 +62,7 @@ SKILLS_HOST_PATH = os.environ.get("SKILLS_HOST_PATH", "/skills")
 THREADS_HOST_PATH = os.environ.get("THREADS_HOST_PATH", "/.deer-flow/threads")
 SKILLS_PVC_NAME = os.environ.get("SKILLS_PVC_NAME", "")
 USERDATA_PVC_NAME = os.environ.get("USERDATA_PVC_NAME", "")
+# [DL-INSIGHT] thread_id is injected into a HostPath volume path — this regex is path-traversal prevention.
 SAFE_THREAD_ID_PATTERN = r"^[A-Za-z0-9_\-]+$"
 
 # Path to the kubeconfig *inside* the provisioner container.
@@ -138,9 +139,8 @@ def _init_k8s_client() -> k8s_client.CoreV1Api:
                 f"No kubeconfig at {KUBECONFIG_PATH}, and in-cluster config is unavailable: {exc}"
             ) from exc
 
-    # When connecting from inside Docker to the host's K8s API, the
-    # kubeconfig may reference ``localhost`` or ``127.0.0.1``.  We
-    # optionally rewrite the server address so it reaches the host.
+    # [DL-NOTE] K8S_API_SERVER overrides the kubeconfig's server URL — needed because
+    # kubeconfig often uses 127.0.0.1 which resolves to the container itself, not the host.
     k8s_api_server = os.environ.get("K8S_API_SERVER")
     if k8s_api_server:
         configuration = k8s_client.Configuration.get_default_copy()
@@ -245,6 +245,8 @@ def _sandbox_url(node_port: int) -> str:
     return f"http://{NODE_HOST}:{node_port}"
 
 
+# [DL-INSIGHT] Dual volume strategy: hostPath volumes for dev (simple, node-local),
+# PVC volumes for production (portable, survives node failure). Controlled by env vars.
 def _build_volumes(thread_id: str) -> list[k8s_client.V1Volume]:
     """Build volume list: PVC when configured, otherwise hostPath."""
     if SKILLS_PVC_NAME:
@@ -363,6 +365,8 @@ def _build_pod(sandbox_id: str, thread_id: str) -> k8s_client.V1Pod:
                         },
                     ),
                     volume_mounts=_build_volume_mounts(thread_id),
+                    # [DL-WARN] privileged=False but allow_privilege_escalation=True — sandbox
+                    # processes can gain extra capabilities via setuid binaries.
                     security_context=k8s_client.V1SecurityContext(
                         privileged=False,
                         allow_privilege_escalation=True,
@@ -450,6 +454,8 @@ async def create_sandbox(req: CreateSandboxRequest):
         f"Received request to create sandbox '{sandbox_id}' for thread '{thread_id}'"
     )
 
+    # [DL-NOTE] Idempotent: if the sandbox already exists (NodePort already allocated),
+    # skip creation and return the existing URL. Safe for retries.
     # ── Fast path: sandbox already exists ────────────────────────────
     existing_port = _get_node_port(sandbox_id)
     if existing_port:
@@ -475,7 +481,8 @@ async def create_sandbox(req: CreateSandboxRequest):
         logger.info(f"Created Service {_svc_name(sandbox_id)}")
     except ApiException as exc:
         if exc.status != 409:
-            # Roll back the Pod on failure
+            # [DL-NOTE] Atomic rollback: if Service creation fails, delete the Pod to avoid
+            # orphaned Pods with no associated Service/NodePort.
             try:
                 core_v1.delete_namespaced_pod(_pod_name(sandbox_id), K8S_NAMESPACE)
             except ApiException:
@@ -484,6 +491,7 @@ async def create_sandbox(req: CreateSandboxRequest):
                 status_code=500, detail=f"Service creation failed: {exc.reason}"
             )
 
+    # [DL-NOTE] K8s allocates the NodePort asynchronously — poll up to 10s (20 × 0.5s) for it.
     # ── Read the auto-allocated NodePort ─────────────────────────────
     node_port: int | None = None
     for _ in range(20):

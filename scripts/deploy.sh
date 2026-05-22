@@ -71,6 +71,8 @@ if [ -z "$DEER_FLOW_CONFIG_PATH" ]; then
     export DEER_FLOW_CONFIG_PATH="$REPO_ROOT/config.yaml"
 fi
 
+# [DL-NOTE] First-run UX: auto-seeds config.yaml from the example template so
+# `deploy.sh` works out-of-the-box without a manual setup step.
 if [ ! -f "$DEER_FLOW_CONFIG_PATH" ]; then
     # Try to seed from repo (config.example.yaml is the canonical template)
     if [ -f "$REPO_ROOT/config.example.yaml" ]; then
@@ -112,6 +114,9 @@ fi
 # Required by Next.js in production. Generated once and persisted so auth
 # sessions survive container restarts.
 
+# [DL-INSIGHT] BETTER_AUTH_SECRET is generated once via Python's secrets module and
+# persisted to .deer-flow/.better-auth-secret (chmod 600). Reloaded on subsequent runs
+# so frontend auth sessions survive container restarts without user intervention.
 _secret_file="$DEER_FLOW_HOME/.better-auth-secret"
 if [ -z "$BETTER_AUTH_SECRET" ]; then
     if [ -f "$_secret_file" ]; then
@@ -129,6 +134,8 @@ fi
 
 # ── detect_sandbox_mode ───────────────────────────────────────────────────────
 
+# [DL-NOTE] YAML is parsed with awk rather than a Python/jq parser — keeps the script
+# dependency-free. Only reads the `sandbox.use` and `sandbox.provisioner_url` keys.
 detect_sandbox_mode() {
     local sandbox_use=""
     local provisioner_url=""
@@ -164,6 +171,8 @@ detect_sandbox_mode() {
 
 # ── down ──────────────────────────────────────────────────────────────────────
 
+# [DL-NOTE] `down` sets placeholder values for all env vars before invoking compose.
+# docker compose refuses to parse the file if referenced variables are unset.
 if [ "$CMD" = "down" ]; then
     # Set minimal env var defaults so docker compose can parse the file without
     # warning about unset variables that appear in volume specs.
@@ -218,6 +227,8 @@ echo -e "${BLUE}Sandbox mode: $sandbox_mode${NC}"
 
 echo -e "${BLUE}Runtime: Gateway embedded agent runtime${NC}"
 
+# [DL-INSIGHT] Selective service start: provisioner is only added to the service list
+# when config.yaml explicitly enables K8s provisioner mode. Not started by default.
 services="frontend gateway nginx"
 
 if [ "$sandbox_mode" = "provisioner" ]; then

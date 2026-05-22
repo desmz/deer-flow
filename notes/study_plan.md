@@ -101,14 +101,17 @@
 
 | Path                             | Status | Notes                                                   |
 | -------------------------------- | ------ | ------------------------------------------------------- |
-| `docker/docker-compose-dev.yaml` | `[ ]`  | Development Docker Compose stack                        |
-| `docker/docker-compose.yaml`     | `[ ]`  | Production Docker Compose stack                         |
-| `docker/nginx/`                  | `[ ]`  | Nginx config: path rewriting, /api/langgraph/\* routing |
-| `docker/dev-entrypoint.sh`       | `[ ]`  | Container bootstrap script for dev mode                 |
-| `docker/provisioner/`            | `[ ]`  | Provisioner container: initial DB setup and seeding     |
-| `scripts/deploy.sh`              | `[ ]`  | Production deployment script                            |
+| `docker/docker-compose-dev.yaml` | `[x]`  | Development Docker Compose stack                        |
+| `.dockerignore`                  | `[x]`  |                                                         |
+| `backend/Dockerfile`             | `[x]`  |                                                         |
+| `frontend/Dockerfile`            | `[x]`  |                                                         |
+| `docker/docker-compose.yaml`     | `[x]`  | Production Docker Compose stack                         |
+| `docker/nginx/`                  | `[x]`  | Nginx config: path rewriting, /api/langgraph/\* routing |
+| `docker/dev-entrypoint.sh`       | `[x]`  | Container bootstrap script for dev mode                 |
+| `docker/provisioner/`            | `[x]`  | Provisioner container: initial DB setup and seeding     |
+| `scripts/deploy.sh`              | `[x]`  | Production deployment script                            |
 | `scripts/serve.sh`               | `[ ]`  | Start the production server                             |
-| `.github/workflows/`             | `[ ]`  | CI/CD pipeline definitions (if present)                 |
+| `.github/workflows/`             | `[x]`  | CI/CD pipeline definitions (if present)                 |
 
 ---
 
@@ -371,6 +374,10 @@
 - Sandbox search (`sandbox/search.py`)
 - Community sandbox (`community/aio_sandbox/`) — remote/async sandbox alternative
 - Sandbox mode detection (Docker vs local)
+
+**Notes:**
+
+- Study this as well `docker/provisioner/` in section 4
 
 **Key files:**
 
@@ -751,7 +758,7 @@
 | 01      | Product Overview & Positioning   | [x]    | `architecture/01-product-overview.md`                                                                                                                                                                                     |
 | 02      | System Architecture              | [x]    | `architecture/02-system-architecture-runtime-package.md`<br>`glossary/nginx-cheatsheet.md`<br>`glossary/nginx-concepts.md`<br>`glossary/nginx-deerflow.md`<br>`glossary/nginx-location-matching-detailed-explaination.md` |
 | 03      | Project Setup & Tooling          | [ ]    |                                                                                                                                                                                                                           |
-| 04      | Infrastructure & DevOps          | [ ]    |                                                                                                                                                                                                                           |
+| 04      | Infrastructure & DevOps          | [~]    | `architecture/04-infrastructure-devops.md`                                                                                                                                                                                |
 | 05      | Backend: Gateway API             | [ ]    |                                                                                                                                                                                                                           |
 | 06      | Backend: Auth & Authorization    | [ ]    |                                                                                                                                                                                                                           |
 | 07      | Backend: LangGraph Runtime       | [ ]    |                                                                                                                                                                                                                           |

@@ -24,6 +24,7 @@
 
 services:
   # ── Reverse Proxy ──────────────────────────────────────────────────────────
+  # [DL-NOTE] Port is configurable via $PORT env var (default 2026). Dev hardcodes it.
   nginx:
     image: nginx:alpine
     container_name: deer-flow-nginx
@@ -42,6 +43,8 @@ services:
     restart: unless-stopped
 
   # ── Frontend: Next.js Production ───────────────────────────────────────────
+  # [DL-NOTE] target: prod — no src/ bind mounts, no hot reload. Static build baked into image.
+  # BETTER_AUTH_SECRET is explicitly required here; dev omits it (auth is relaxed in dev).
   frontend:
     build:
       context: ../
@@ -71,8 +74,12 @@ services:
         UV_INDEX_URL: ${UV_INDEX_URL:-https://pypi.org/simple}
         UV_EXTRAS: ${UV_EXTRAS:-}
     container_name: deer-flow-gateway
+    # [DL-INSIGHT] Production runs uvicorn directly with configurable worker count (default 4).
+    # No dev-entrypoint.sh, no `uv sync` at startup — .venv is baked into the image.
     command: sh -c "cd backend && PYTHONPATH=. uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --workers ${GATEWAY_WORKERS:-4}"
     volumes:
+      # [DL-NOTE] Config files injected via env var paths — makes the compose file portable
+      # across deployment environments without needing to edit it directly.
       - ${DEER_FLOW_CONFIG_PATH}:/app/backend/config.yaml:ro
       - ${DEER_FLOW_EXTENSIONS_CONFIG_PATH}:/app/backend/extensions_config.json:ro
       - ../skills:/app/skills:ro
@@ -144,6 +151,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 6
+# [DL-NOTE] No postgres service in prod — production assumes an external DB via DATABASE_URL
+# in .env, or falls back to SQLite. No named volumes either — .venv is baked into the image.
 networks:
   deer-flow:
     driver: bridge
