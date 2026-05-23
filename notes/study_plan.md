@@ -129,13 +129,22 @@
 
 **Key files:**
 
-| Path                                     | Status | Notes                                                                 |
-| ---------------------------------------- | ------ | --------------------------------------------------------------------- |
-| `backend/app/gateway/app.py`             | `[ ]`  | FastAPI app bootstrap: lifespan, middleware, router mounting          |
-| `backend/app/gateway/routers/`           | `[ ]`  | All HTTP route handlers (agents, auth, channels, runs, threads, etc.) |
-| `backend/app/gateway/deps.py`            | `[ ]`  | Dependency injection: config and services flowing into handlers       |
-| `backend/app/gateway/services.py`        | `[ ]`  | Service abstraction layer                                             |
-| `backend/app/gateway/csrf_middleware.py` | `[ ]`  | CSRF protection middleware                                            |
+| Path                                     | Status | Notes                                                                                         |
+| ---------------------------------------- | ------ | --------------------------------------------------------------------------------------------- |
+| `backend/app/gateway/app.py`             | `[x]`  | FastAPI app bootstrap: lifespan, middleware, router mounting                                  |
+| `backend/app/gateway/routers/`           | `[x]`  | All HTTP route handlers (agents, auth, channels, runs, threads, etc.) — documented separately |
+| `backend/app/gateway/deps.py`            | `[x]`  | Dependency injection: config and services flowing into handlers                               |
+| `backend/app/gateway/services.py`        | `[x]`  | Service abstraction layer                                                                     |
+| `backend/app/gateway/csrf_middleware.py` | `[x]`  | CSRF protection middleware                                                                    |
+| `backend/app/gateway/config.py`          | `[x]`  | Gateway server settings (host, port, docs toggle)                                             |
+| `backend/app/gateway/path_utils.py`      | `[x]`  | Virtual → physical path resolution                                                            |
+| `backend/app/gateway/utils.py`           | `[x]`  | Log injection sanitizer                                                                       |
+
+**Notes files:**
+
+- `notes/modules/05a-gateway-api.md` — app bootstrap, middleware, deps, services (all files except routers/)
+- `notes/modules/05b-api-endpoints-overview.md` — overview of all 14 API sets + flat endpoint index
+- `notes/modules/05-api-reference/` — per-router detailed API reference (auth, agents, assistants, threads, runs, feedback, uploads, artifacts, suggestions, models, skills, memory, mcp, channels)
 
 ---
 
@@ -759,7 +768,7 @@
 | 02      | System Architecture              | [x]    | `architecture/02-system-architecture-runtime-package.md`<br>`glossary/nginx-cheatsheet.md`<br>`glossary/nginx-concepts.md`<br>`glossary/nginx-deerflow.md`<br>`glossary/nginx-location-matching-detailed-explaination.md` |
 | 03      | Project Setup & Tooling          | [ ]    |                                                                                                                                                                                                                           |
 | 04      | Infrastructure & DevOps          | [~]    | `architecture/04-infrastructure-devops.md`                                                                                                                                                                                |
-| 05      | Backend: Gateway API             | [ ]    |                                                                                                                                                                                                                           |
+| 05      | Backend: Gateway API             | [x]    | `modules/05a-gateway-api.md`, `modules/05b-api-endpoints-overview.md`, `modules/05-api-reference/`                                                                                                                        |
 | 06      | Backend: Auth & Authorization    | [ ]    |                                                                                                                                                                                                                           |
 | 07      | Backend: LangGraph Runtime       | [ ]    |                                                                                                                                                                                                                           |
 | 08      | Backend: Lead Agent              | [ ]    |                                                                                                                                                                                                                           |

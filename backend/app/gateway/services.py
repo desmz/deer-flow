@@ -41,6 +41,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+# [DL-NOTE] Field order (event → data → id) is mandated by the LangGraph Platform wire format.
+# Swapping order breaks the langgraph-sdk SSE decoder and the frontend useStream hook.
 def format_sse(event: str, data: Any, *, event_id: str | None = None) -> str:
     """Format a single SSE frame.
 
@@ -88,6 +90,7 @@ def normalize_input(raw_input: dict[str, Any] | None) -> dict[str, Any]:
                 if role in ("user", "human"):
                     converted.append(HumanMessage(content=content))
                 else:
+                    # [DL-WARN] Non-user message types (system, ai, tool) silently become HumanMessage.
                     # TODO: handle other message types (system, ai, tool)
                     converted.append(HumanMessage(content=content))
             else:
@@ -99,12 +102,9 @@ def normalize_input(raw_input: dict[str, Any] | None) -> dict[str, Any]:
 _DEFAULT_ASSISTANT_ID = "lead_agent"
 
 
-# Whitelist of run-context keys that the langgraph-compat layer forwards from
-# ``body.context`` into the run config. ``config["context"]`` exists in
-# LangGraph >=0.6, but these values must be written to both ``configurable``
-# (for legacy ``_get_runtime_config`` consumers) and ``context`` because
-# LangGraph >=1.1.9 no longer makes ``ToolRuntime.context`` fall back to
-# ``configurable`` for consumers like ``setup_agent``.
+# [DL-INSIGHT] Dual-write whitelist: LangGraph 1.1.9 removed the configurable→context fallback,
+# so these keys must land in BOTH containers to satisfy both old and new LangGraph consumers.
+# Whitelist also prevents client-injected keys (e.g. thread_id) from spoofing system values.
 _CONTEXT_CONFIGURABLE_KEYS: frozenset[str] = frozenset(
     {
         "model_name",
@@ -137,6 +137,8 @@ def merge_run_context_overrides(config: dict[str, Any], context: Mapping[str, An
                 runtime_context.setdefault(key, context[key])
 
 
+# [DL-INSIGHT] Security boundary: user_id always comes from server-side request.state.user,
+# never from body.context. A malicious client cannot spoof another user's identity.
 def inject_authenticated_user_context(config: dict[str, Any], request: Request) -> None:
     """Stamp the authenticated user into the run context for background tools.
 
@@ -155,6 +157,8 @@ def inject_authenticated_user_context(config: dict[str, Any], request: Request) 
         runtime_context["user_id"] = str(user_id)
 
 
+# [DL-INSIGHT] All custom agents run on the same lead_agent graph. There is no separate
+# LangGraph graph per custom agent — routing happens inside make_lead_agent via agent_name.
 def resolve_agent_factory(assistant_id: str | None):
     """Resolve the agent factory callable from config.
 
@@ -329,6 +333,8 @@ async def start_run(
 
     stream_modes = normalize_stream_modes(body.stream_mode)
 
+    # [DL-INSIGHT] Fire-and-forget: start_run returns immediately after creating the task.
+    # The caller subscribes to events via sse_consumer() — the run and the HTTP response are decoupled.
     task = asyncio.create_task(
         run_agent(
             bridge,
@@ -365,12 +371,16 @@ async def sse_consumer(
     - ``cancel``: abort the background task on client disconnect.
     - ``continue``: let the task run; events are discarded.
     """
+    # [DL-NOTE] Last-Event-ID enables SSE reconnect resumability: the bridge replays
+    # missed events from that ID so clients can transparently reconnect mid-stream.
     last_event_id = request.headers.get("Last-Event-ID")
     try:
         async for entry in bridge.subscribe(record.run_id, last_event_id=last_event_id):
             if await request.is_disconnected():
                 break
 
+            # [DL-NOTE] SSE comments (": heartbeat") keep the connection alive through
+            # proxies and load balancers that close idle connections after their timeout.
             if entry is HEARTBEAT_SENTINEL:
                 yield ": heartbeat\n\n"
                 continue
@@ -382,6 +392,8 @@ async def sse_consumer(
             yield format_sse(entry.event, entry.data, event_id=entry.id or None)
 
     finally:
+        # [DL-INSIGHT] on_disconnect semantics: "cancel" aborts the background task;
+        # "continue" lets it run to completion — events are simply discarded by the generator.
         if record.status in (RunStatus.pending, RunStatus.running):
             if record.on_disconnect == DisconnectMode.cancel:
                 await run_mgr.cancel(record.run_id)

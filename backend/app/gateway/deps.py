@@ -5,6 +5,9 @@ missing, except ``get_store`` which returns ``None``.
 
 Initialization is handled directly in ``app.py`` via :class:`AsyncExitStack`.
 """
+# [DL-INSIGHT] This file has two distinct roles that are easy to miss:
+# 1. langgraph_runtime() — startup/teardown of ALL runtime singletons (called once from app.py)
+# 2. get_* functions — per-request FastAPI dependencies injected into router handlers
 
 from __future__ import annotations
 
@@ -59,14 +62,15 @@ async def langgraph_runtime(app: FastAPI) -> AsyncGenerator[None, None]:
 
         app.state.stream_bridge = await stack.enter_async_context(make_stream_bridge(config))
 
-        # Initialize persistence engine BEFORE checkpointer so that
-        # auto-create-database logic runs first (postgres backend).
+        # [DL-WARN] Order matters: DB engine must init before checkpointer.
+        # The checkpointer's first operation may create or access tables that don't exist yet.
         await init_engine_from_config(config.database)
 
         app.state.checkpointer = await stack.enter_async_context(make_checkpointer(config))
         app.state.store = await stack.enter_async_context(make_store(config))
 
-        # Initialize repositories — one get_session_factory() call for all.
+        # [DL-NOTE] sf is captured once and shared across all repositories — they all
+        # use the same session factory so there is no risk of them targeting different DBs.
         sf = get_session_factory()
         if sf is not None:
             from deerflow.persistence.feedback import FeedbackRepository
@@ -75,6 +79,7 @@ async def langgraph_runtime(app: FastAPI) -> AsyncGenerator[None, None]:
             app.state.run_store = RunRepository(sf)
             app.state.feedback_repo = FeedbackRepository(sf)
         else:
+            # [DL-NOTE] No DB → in-memory run store. Runs are not persisted across restarts.
             from deerflow.runtime.runs.store.memory import MemoryRunStore
 
             app.state.run_store = MemoryRunStore()
@@ -102,6 +107,8 @@ async def langgraph_runtime(app: FastAPI) -> AsyncGenerator[None, None]:
 # ---------------------------------------------------------------------------
 
 
+# [DL-INSIGHT] _require is a dependency factory — generates 6 typed FastAPI dependencies
+# from one template. 503 (not 500) signals "service not ready" to callers and load balancers.
 def _require(attr: str, label: str) -> Callable[[Request], T]:
     """Create a FastAPI dependency that returns ``app.state.<attr>`` or 503."""
 
@@ -111,6 +118,8 @@ def _require(attr: str, label: str) -> Callable[[Request], T]:
             raise HTTPException(status_code=503, detail=f"{label} not available")
         return cast(T, val)
 
+    # [DL-NOTE] Name assignment makes FastAPI show "get_stream_bridge" etc. in /docs
+    # instead of the generic inner function name "dep".
     dep.__name__ = dep.__qualname__ = f"get_{attr}"
     return dep
 
@@ -123,6 +132,8 @@ get_feedback_repo: Callable[[Request], FeedbackRepository] = _require("feedback_
 get_run_store: Callable[[Request], RunStore] = _require("run_store", "Run store")
 
 
+# [DL-INSIGHT] get_store is the only getter that returns None instead of raising 503.
+# The LangGraph store is genuinely optional — the system runs without it (no memory persistence).
 def get_store(request: Request):
     """Return the global store (may be ``None`` if not configured)."""
     return getattr(request.app.state, "store", None)
@@ -136,6 +147,8 @@ def get_thread_store(request: Request) -> ThreadMetaStore:
     return val
 
 
+# [DL-INSIGHT] Parameter object pattern: bundles 5+ infrastructure dependencies into one
+# RunContext so run_agent() receives one argument instead of an ever-growing kwarg list.
 def get_run_context(request: Request) -> RunContext:
     """Build a :class:`RunContext` from ``app.state`` singletons.
 
@@ -156,7 +169,9 @@ def get_run_context(request: Request) -> RunContext:
 # Auth helpers (used by authz.py and auth middleware)
 # ---------------------------------------------------------------------------
 
-# Cached singletons to avoid repeated instantiation per request
+# [DL-INSIGHT] Auth singletons live as module-level globals, not on app.state.
+# They have no async teardown requirement and need to be accessible from non-request
+# contexts (e.g., _ensure_admin_user in app.py which has no Request object).
 _cached_local_provider: LocalAuthProvider | None = None
 _cached_repo: SQLiteUserRepository | None = None
 
@@ -213,7 +228,8 @@ async def get_current_user_from_request(request: Request):
             detail=AuthErrorResponse(code=AuthErrorCode.USER_NOT_FOUND, message="User not found").model_dump(),
         )
 
-    # Token version mismatch → password was changed, token is stale
+    # [DL-INSIGHT] token_version is a lightweight token revocation mechanism: incrementing it
+    # on password change invalidates all existing JWTs without needing a token blacklist.
     if user.token_version != payload.ver:
         raise HTTPException(
             status_code=401,

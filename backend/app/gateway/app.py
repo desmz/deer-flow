@@ -45,9 +45,13 @@ logger = logging.getLogger(__name__)
 # Upper bound (seconds) each lifespan shutdown hook is allowed to run.
 # Bounds worker exit time so uvicorn's reload supervisor does not keep
 # firing signals into a worker that is stuck waiting for shutdown cleanup.
+# [DL-INSIGHT] Bounding shutdown hooks prevents hot-reload hangs: uvicorn sends SIGTERM
+# and force-kills workers that don't exit; a stuck channel teardown would block indefinitely.
 _SHUTDOWN_HOOK_TIMEOUT_SECONDS = 5.0
 
 
+# [DL-INSIGHT] Two-phase startup: first boot (no admin) shows /setup banner;
+# subsequent boots run the one-time "no-auth → with-auth" thread ownership migration.
 async def _ensure_admin_user(app: FastAPI) -> None:
     """Startup hook: handle first boot and migrate orphan threads otherwise.
 
@@ -120,6 +124,8 @@ async def _ensure_admin_user(app: FastAPI) -> None:
             logger.exception("LangGraph thread migration failed (non-fatal)")
 
 
+# [DL-NOTE] Short-page termination avoids an extra empty round-trip: if batch < page_size
+# we are on the last page; an extra asearch() call is unnecessary.
 async def _iter_store_items(store, namespace, *, page_size: int = 500):
     """Paginated async iterator over a LangGraph store namespace.
 
@@ -173,7 +179,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     config = get_gateway_config()
     logger.info(f"Starting API Gateway on {config.host}:{config.port}")
 
-    # Initialize LangGraph runtime components (StreamBridge, RunManager, checkpointer, store)
+    # [DL-INSIGHT] langgraph_runtime is an AsyncExitStack context: it initialises StreamBridge,
+    # checkpointer, DB engine, store, and all repositories — and cleans them up on exit.
+    # See: app/gateway/deps.py → langgraph_runtime()
     async with langgraph_runtime(app):
         logger.info("LangGraph runtime initialised")
 
@@ -192,7 +200,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         yield
 
-        # Stop channel service on shutdown (bounded to prevent worker hang)
+        # [DL-WARN] Shutdown uses asyncio.wait_for to enforce _SHUTDOWN_HOOK_TIMEOUT_SECONDS.
+        # A TimeoutError here is swallowed — channel state may not flush cleanly on fast reload.
         try:
             from app.channels.service import stop_channel_service
 
@@ -304,6 +313,8 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
         ],
     )
 
+    # [DL-INSIGHT] add_middleware() stacks in reverse: last-added is outermost in the ASGI chain.
+    # Request path: CORSMiddleware → CSRFMiddleware → AuthMiddleware → route handler.
     # Auth: reject unauthenticated requests to non-public paths (fail-closed safety net)
     app.add_middleware(AuthMiddleware)
 
@@ -313,6 +324,7 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
     # CORS: the unified nginx endpoint is same-origin by default. Split-origin
     # browser clients must opt in with this explicit Gateway allowlist so CORS
     # and CSRF origin checks share the same source of truth.
+    # [DL-NOTE] sorted() ensures CORS and CSRF checks compare against the same ordered list.
     cors_origins = sorted(get_configured_cors_origins())
     if cors_origins:
         app.add_middleware(
@@ -381,5 +393,6 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
     return app
 
 
-# Create app instance for uvicorn
+# [DL-NOTE] Module-level app is the uvicorn entry point. create_app() factory also allows
+# tests to construct isolated instances without touching the module-level singleton.
 app = create_app()

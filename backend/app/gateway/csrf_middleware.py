@@ -16,6 +16,7 @@ from starlette.types import ASGIApp
 
 CSRF_COOKIE_NAME = "csrf_token"
 CSRF_HEADER_NAME = "X-CSRF-Token"
+# [DL-NOTE] 64 bytes = 512 bits of entropy — well above OWASP's 128-bit minimum for CSRF tokens.
 CSRF_TOKEN_LENGTH = 64  # bytes
 
 
@@ -45,6 +46,8 @@ def should_check_csrf(request: Request) -> bool:
     return True
 
 
+# [DL-INSIGHT] Auth endpoints can't require a double-submit token — the browser has no cookie yet.
+# They are instead protected by Origin header validation in is_allowed_auth_origin().
 _AUTH_EXEMPT_PATHS: frozenset[str] = frozenset(
     {
         "/api/v1/auth/login/local",
@@ -74,6 +77,8 @@ def _host_with_optional_port(hostname: str, port: int | None, scheme: str) -> st
     return f"{host}:{port}"
 
 
+# [DL-NOTE] The browser Origin header is only scheme://host[:port] — no path, query, or fragment.
+# Rejecting URL-shaped or credentialed strings guards against origin header injection.
 def _normalize_origin(origin: str) -> str | None:
     """Return a normalized scheme://host[:port] origin, or None for invalid input."""
     try:
@@ -106,11 +111,15 @@ def _configured_cors_origins() -> set[str]:
     return origins
 
 
+# [DL-INSIGHT] CORS and CSRF share the same origin list (GATEWAY_CORS_ORIGINS env var).
+# Co-locating them here ensures they can never drift out of sync. See: app/gateway/app.py → create_app()
 def get_configured_cors_origins() -> set[str]:
     """Return normalized explicit browser origins from GATEWAY_CORS_ORIGINS."""
     return _configured_cors_origins()
 
 
+# [DL-NOTE] Reverse proxies append their own value; the first entry is client-closest.
+# e.g. X-Forwarded-Proto: https, http → the client sent https, nginx added http.
 def _first_header_value(value: str | None) -> str | None:
     """Return the first value from a comma-separated proxy header."""
     if not value:
@@ -132,6 +141,8 @@ def _forwarded_param(request: Request, name: str) -> str | None:
     return None
 
 
+# [DL-INSIGHT] Prefers RFC 7239 Forwarded header over X-Forwarded-Proto (de-facto).
+# Priority: Forwarded: proto= → X-Forwarded-Proto → request.url.scheme (direct connection).
 def _request_scheme(request: Request) -> str:
     """Resolve the original request scheme from trusted proxy headers."""
     scheme = _forwarded_param(request, "proto") or _first_header_value(request.headers.get("x-forwarded-proto")) or request.url.scheme
@@ -160,6 +171,8 @@ def is_allowed_auth_origin(request: Request) -> bool:
     are allowed for non-browser clients such as curl and mobile integrations.
     """
     origin = request.headers.get("origin")
+    # [DL-INSIGHT] No Origin header means a non-browser client (curl, mobile SDK).
+    # Browsers always send Origin on cross-origin requests; absence implies same-origin or non-browser.
     if not origin:
         return True
 
@@ -196,7 +209,9 @@ class CSRFMiddleware(BaseHTTPMiddleware):
                     content={"detail": "CSRF token missing. Include X-CSRF-Token header."},
                 )
 
-            if not secrets.compare_digest(cookie_token, header_token):
+            # [DL-NOTE] compare_digest is timing-safe — prevents timing attacks that could
+        # infer matching token bytes from response latency differences.
+        if not secrets.compare_digest(cookie_token, header_token):
                 return JSONResponse(
                     status_code=403,
                     content={"detail": "CSRF token mismatch."},
@@ -209,6 +224,8 @@ class CSRFMiddleware(BaseHTTPMiddleware):
             # Generate a new CSRF token for the session
             csrf_token = generate_csrf_token()
             is_https = is_secure_request(request)
+            # [DL-INSIGHT] httponly=False is intentional: JS must read this cookie to copy
+            # its value into the X-CSRF-Token header on subsequent requests. Security relies on SOP.
             response.set_cookie(
                 key=CSRF_COOKIE_NAME,
                 value=csrf_token,
