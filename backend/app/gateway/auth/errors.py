@@ -5,6 +5,8 @@ TokenError: exhaustive enum of JWT decode failures.
 AuthErrorResponse: structured error payload for HTTP responses.
 """
 
+# [DL-NOTE] StrEnum lets enum values compare equal to plain strings, so they
+# serialize directly in JSON/HTTP responses without calling .value.
 from enum import StrEnum
 
 from pydantic import BaseModel
@@ -20,9 +22,12 @@ class AuthErrorCode(StrEnum):
     EMAIL_ALREADY_EXISTS = "email_already_exists"
     PROVIDER_NOT_FOUND = "provider_not_found"
     NOT_AUTHENTICATED = "not_authenticated"
+    # [DL-NOTE] Implies a one-time system initialization flow (initial admin setup).
     SYSTEM_ALREADY_INITIALIZED = "system_already_initialized"
 
 
+# [DL-INSIGHT] Two-level taxonomy: TokenError captures JWT-library-level failures;
+# token_error_to_code() maps them up to the HTTP-level AuthErrorCode taxonomy.
 class TokenError(StrEnum):
     """Exhaustive list of JWT decode failure reasons."""
 

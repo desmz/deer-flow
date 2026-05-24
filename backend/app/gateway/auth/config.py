@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
+# [DL-NOTE] Secret lives at {base_dir}/.jwt_secret (e.g. backend/.deer-flow/.jwt_secret).
 _SECRET_FILE = ".jwt_secret"
 
 
@@ -24,6 +25,7 @@ class AuthConfig(BaseModel):
         ...,
         description="Secret key for JWT signing. MUST be set via AUTH_JWT_SECRET.",
     )
+    # [DL-NOTE] Pydantic ge/le enforces 1–30 day range; missing jwt_secret is a hard error (no default).
     token_expiry_days: int = Field(default=7, ge=1, le=30)
     oauth_github_client_id: str | None = Field(default=None)
     oauth_github_client_secret: str | None = Field(default=None)
@@ -50,6 +52,8 @@ def _load_or_create_secret() -> str:
     secret = secrets.token_urlsafe(32)
     try:
         secret_file.parent.mkdir(parents=True, exist_ok=True)
+        # [DL-INSIGHT] os.open with 0o600 sets file permissions atomically at creation time,
+        # ensuring the secret is never world-readable even briefly after creation.
         fd = os.open(secret_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(secret)
@@ -68,6 +72,8 @@ def get_auth_config() -> AuthConfig:
         jwt_secret = os.environ.get("AUTH_JWT_SECRET")
         if not jwt_secret:
             jwt_secret = _load_or_create_secret()
+            # [DL-NOTE] Back-propagates auto-generated secret to env so any later
+            # os.environ.get("AUTH_JWT_SECRET") readers see the same value.
             os.environ["AUTH_JWT_SECRET"] = jwt_secret
             logger.warning(
                 "⚠ AUTH_JWT_SECRET is not set — using an auto-generated secret "
@@ -79,6 +85,8 @@ def get_auth_config() -> AuthConfig:
     return _auth_config
 
 
+# [DL-NOTE] set_auth_config is a test escape hatch — lets tests inject a known secret
+# without touching the filesystem or env var.
 def set_auth_config(config: AuthConfig) -> None:
     """Set the global AuthConfig instance (for testing)."""
     global _auth_config

@@ -44,3 +44,27 @@ Running log of unresolved questions across all study sections.
 - `deps.py`: `_cached_local_provider` and `_cached_repo` are module-level globals, not on `app.state`. This means they survive across test client instances in unit tests — could this cause cross-test state pollution if two tests configure different session factories?
 - `services.py`: `normalize_input` converts all non-user message types (system, ai, tool) to `HumanMessage` with a TODO comment. Is this currently a real limitation affecting callers who send multi-turn history, or is the API only used for single human messages?
 - `services.py`: `start_run` validates `model_name` against the allowlist but only when it is set in `body.context`. Can a client bypass this by injecting `model_name` directly into `body.config.configurable`?
+
+---
+
+## Section 06 — Backend: Auth & Authorization (`auth/` folder)
+
+- **GitHub OAuth fields** (`oauth_github_client_id`, `oauth_github_client_secret` in `AuthConfig`) — no consumer found in `providers.py`, `local_provider.py`, or any router. Are these wired somewhere not yet studied, or placeholder config for a future OAuth provider?
+- **`iat` claim in `TokenPayload`** — parsed and stored on the model, but `deps.py` and `langgraph_auth.py` only read `sub` and `ver`. Is `iat` purely RFC 7519 compliance, or does a consumer exist elsewhere?
+- **`credential_file.py` `label="initial"` default** — no active caller passes `label="initial"`. The `initialize_admin` endpoint takes credentials from the request body. Is the "initial" path dead code, or reserved for a future headless first-boot provisioning flow?
+
+---
+
+## Section 06 — Backend: Auth & Authorization (`auth_middleware.py`)
+
+- **`AUTH_TEST_PLAN test 7.5.8`** — the comment references a specific test plan document that identified the "junk cookie bypass gap". Where does this plan live in the repo (if at all), and what other identified gaps have not yet been closed?
+- **Internal user as `SimpleNamespace`** — `get_internal_user()` returns `SimpleNamespace(id=DEFAULT_USER_ID, system_role="internal")`, which lacks `User` model fields like `email`, `token_version`, `system_role`. If a downstream route handler calls `user.email` or `user.token_version`, it will `AttributeError`. Is there a contract that internal-auth paths never hit routes that access those fields?
+- **Dual state stamps** — both `request.state.user` and the `user_context` contextvar carry the same user object. Who consumes `request.state.user` directly vs the contextvar? Is there a pattern where one is needed and the other is not sufficient?
+- **`require_auth` has no production callsites** — every router uses `@require_permission` directly. Is `require_auth` kept for future routes that need only authentication (no resource model), or is it effectively dead code that could be removed?
+
+---
+
+## Section 06 — Backend: Auth & Authorization (`langgraph_auth.py`)
+
+- **CSRF duplication** — `_check_csrf` in `langgraph_auth.py` duplicates the Double Submit Cookie logic from `CSRFMiddleware`. Is there a shared utility these could both call, or is the duplication intentional (no shared dependency between Gateway middleware and LangGraph auth handler)?
+- **`@auth.on` fires on both writes and reads** — the `value.setdefault("metadata", {})` mutation happens on every call, including read-only operations where `metadata` injection is meaningless. Does LangGraph's `Auth.on` provide a way to dispatch separately for reads vs writes, or is the unconditional mutation harmless?

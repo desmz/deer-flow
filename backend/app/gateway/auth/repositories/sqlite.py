@@ -35,12 +35,14 @@ class SQLiteUserRepository(UserRepository):
     @staticmethod
     def _row_to_user(row: UserRow) -> User:
         return User(
+            # [DL-NOTE] UserRow.id is a 36-char string (cross-backend portability);
+            # convert back to UUID so the Pydantic model stays strongly typed.
             id=UUID(row.id),
             email=row.email,
             password_hash=row.password_hash,
             system_role=row.system_role,  # type: ignore[arg-type]
-            # SQLite loses tzinfo on read; reattach UTC so downstream
-            # code can compare timestamps reliably.
+            # [DL-WARN] SQLite stores DateTime without timezone and returns a naive datetime;
+            # .replace(tzinfo=UTC) reattaches the zone so comparisons against aware datetimes work.
             created_at=row.created_at if row.created_at.tzinfo else row.created_at.replace(tzinfo=UTC),
             oauth_provider=row.oauth_provider,
             oauth_id=row.oauth_id,
@@ -73,11 +75,15 @@ class SQLiteUserRepository(UserRepository):
                 await session.commit()
             except IntegrityError as exc:
                 await session.rollback()
+                # [DL-NOTE] Translates DB-level IntegrityError to ValueError so callers
+                # stay decoupled from SQLAlchemy — the interface contract says ValueError, not IntegrityError.
                 raise ValueError(f"Email already registered: {user.email}") from exc
         return user
 
     async def get_user_by_id(self, user_id: str) -> User | None:
         async with self._sf() as session:
+            # [DL-NOTE] session.get() is a PK lookup — hits the SQLAlchemy identity map
+            # (in-session cache) before issuing a SELECT, faster than a WHERE query.
             row = await session.get(UserRow, user_id)
             return self._row_to_user(row) if row is not None else None
 
@@ -90,6 +96,8 @@ class SQLiteUserRepository(UserRepository):
 
     async def update_user(self, user: User) -> User:
         async with self._sf() as session:
+            # [DL-INSIGHT] Fetch-then-mutate (not a direct UPDATE) so SQLAlchemy's
+            # change-tracking fires and a missing row is detected before any write.
             row = await session.get(UserRow, str(user.id))
             if row is None:
                 # Hard fail on concurrent delete: callers (reset_admin,

@@ -22,12 +22,16 @@ from app.gateway.auth.errors import TokenError
 from app.gateway.auth.jwt import decode_token
 from app.gateway.deps import get_local_provider
 
+# [DL-NOTE] auth is wired via langgraph.json "auth.path" — it only activates in LangGraph Server
+# mode (Studio, `langgraph dev`). The default Gateway-embedded deployment never loads this.
 auth = Auth()
 
 # Methods that require CSRF validation (state-changing per RFC 7231).
 _CSRF_METHODS = frozenset({"POST", "PUT", "DELETE", "PATCH"})
 
 
+# [DL-WARN] Duplicates the Double Submit Cookie logic from CSRFMiddleware. If the CSRF header
+# name, cookie name, or comparison algorithm changes, this function must be updated too.
 def _check_csrf(request) -> None:
     """Enforce Double Submit Cookie CSRF check for state-changing requests.
 
@@ -54,6 +58,8 @@ def _check_csrf(request) -> None:
         )
 
 
+# [DL-INSIGHT] Mirrors deps.get_current_user_from_request exactly (cookie → JWT → DB →
+# token_version). Gateway middleware handles this in embedded mode; here it runs inside LangGraph.
 @auth.authenticate
 async def authenticate(request):
     """Validate the session cookie, decode JWT, and check token_version.
@@ -92,9 +98,12 @@ async def authenticate(request):
             detail="Token revoked (password changed)",
         )
 
+    # [DL-NOTE] payload.sub (user UUID string) becomes ctx.user.identity in @auth.on callbacks.
     return payload.sub
 
 
+# [DL-INSIGHT] LangGraph Server equivalent of @require_permission(owner_check=True):
+# stamps user_id on writes and injects it as a DB-level filter on reads/deletes.
 @auth.on
 async def add_owner_filter(ctx: Auth.types.AuthContext, value: dict):
     """Inject user_id metadata on writes; filter by user_id on reads.

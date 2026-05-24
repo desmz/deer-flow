@@ -24,6 +24,9 @@ _PREFIX_V2 = "$dfv2$"
 _PREFIX_V1 = "$dfv1$"
 
 
+# [DL-INSIGHT] bcrypt silently truncates input at 72 bytes — passwords differing only
+# after byte 72 would produce the same hash. SHA-256 collapses any-length input to 32
+# bytes; base64-encoding produces 44 printable ASCII bytes (safe for bcrypt, within limit).
 def _pre_hash_v2(password: str) -> bytes:
     """SHA-256 pre-hash to bypass bcrypt's 72-byte limit."""
     return base64.b64encode(hashlib.sha256(password.encode("utf-8")).digest())
@@ -49,20 +52,25 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         if hashed_password.startswith(_PREFIX_V1):
             bcrypt_hash = hashed_password[len(_PREFIX_V1) :]
         else:
+            # [DL-NOTE] Bare bcrypt hash (no prefix) = legacy pre-versioning data, treated as v1.
             bcrypt_hash = hashed_password
 
         return bcrypt.checkpw(plain_password.encode("utf-8"), bcrypt_hash.encode("utf-8"))
     except ValueError:
-        # bcrypt raises ValueError for malformed or corrupt hashes (e.g., invalid salt).
-        # Fail closed rather than crashing the request.
+        # [DL-WARN] Fail closed: malformed/corrupt hash returns False instead of raising,
+        # preventing a 500 that would leak hash corruption to the caller.
         return False
 
 
+# [DL-INSIGHT] Transparent migration: local_provider calls needs_rehash() after a
+# successful login and silently upgrades v1/bare hashes to v2 in place.
 def needs_rehash(hashed_password: str) -> bool:
     """Return True if the hash uses an older version and should be rehashed."""
     return not hashed_password.startswith(_PREFIX_V2)
 
 
+# [DL-NOTE] bcrypt is CPU-bound (intentionally slow). asyncio.to_thread() offloads it
+# to avoid stalling the FastAPI event loop during login/register requests.
 async def hash_password_async(password: str) -> str:
     """Hash a password using bcrypt (non-blocking).
 

@@ -167,11 +167,36 @@
 
 | Path                                     | Status | Notes                                                              |
 | ---------------------------------------- | ------ | ------------------------------------------------------------------ |
-| `backend/app/gateway/auth/`              | `[ ]`  | Auth providers, local auth, JWT, password hashing, credential file |
-| `backend/app/gateway/auth_middleware.py` | `[ ]`  | Per-request authentication enforcement                             |
-| `backend/app/gateway/langgraph_auth.py`  | `[ ]`  | Translates Gateway auth context into LangGraph identity            |
-| `backend/app/gateway/authz.py`           | `[ ]`  | Authorization rules (who can access what)                          |
-| `backend/app/gateway/internal_auth.py`   | `[ ]`  | Service-to-service auth for internal calls                         |
+| `backend/app/gateway/auth/`              | `[x]`  | Auth providers, local auth, JWT, password hashing, credential file |
+| `backend/app/gateway/auth_middleware.py` | `[x]`  | Per-request authentication enforcement                             |
+| `backend/app/gateway/langgraph_auth.py`  | `[x]`  | Translates Gateway auth context into LangGraph identity            |
+| `backend/app/gateway/authz.py`           | `[x]`  | Authorization rules (who can access what)                          |
+| `backend/app/gateway/internal_auth.py`   | `[x]`  | Service-to-service auth for internal calls                         |
+| `backend/app/gateway/routers/auth.py`    | `[x]`  | Api endpoints for authentication subsystem                         |
+
+**Study order:**
+
+Inside auth/ — primitives first:
+
+1. auth/errors.py — error types used by every other file; read first so the names are familiar when you encounter them downstream.
+2. auth/config.py — establishes what auth modes exist (no-auth, local, etc.). Shapes the mental model before reading any logic.
+3. auth/models.py — the data shapes (User, AuthContext, Token). Everything else produces or consumes these.
+4. auth/password.py — atomic primitive; no dependencies on the other auth files.
+5. auth/jwt.py — the token currency. Depends on models.py (signs a User) and config.py (secret key).
+6. auth/credential_file.py — persists credentials to disk. Depends on password.py for hashing.
+7. auth/repositories/base.py — user CRUD interface. Depends on models.py.
+8. auth/repositories/sqlite.py — SQLite implementation of that interface.
+9. auth/providers.py — pluggable provider abstraction. Now that you know models, JWT, and repos, the interface contract is clear.
+10. auth/local_provider.py — the concrete username/password flow. Pulls in everything above.
+11. auth/reset_admin.py — small utility; read right after local_provider.py since it exercises the same code path.
+
+Outside auth/ — enforcement layer:
+
+12. auth_middleware.py — wraps every request; consumes providers and JWT validation.
+13. authz.py — who can do what once authenticated (authorization is logically after authentication).
+14. internal_auth.py — service-to-service auth; a parallel trust model, easier to read after the user auth pattern is solid.
+15. langgraph_auth.py — the final integration point; translates Gateway auth context into LangGraph's identity system.
+16. routers/auth.py - Api endpoints for authentication subsystem
 
 ---
 
@@ -769,7 +794,7 @@
 | 03      | Project Setup & Tooling          | [ ]    |                                                                                                                                                                                                                           |
 | 04      | Infrastructure & DevOps          | [~]    | `architecture/04-infrastructure-devops.md`                                                                                                                                                                                |
 | 05      | Backend: Gateway API             | [x]    | `modules/05a-gateway-api.md`, `modules/05b-api-endpoints-overview.md`, `modules/05-api-reference/`                                                                                                                        |
-| 06      | Backend: Auth & Authorization    | [ ]    |                                                                                                                                                                                                                           |
+| 06      | Backend: Auth & Authorization    | [x]    | `modules/06a-auth-internals.md`, `modules/06b-auth-enforcement.md`                                                                                                                                                        |
 | 07      | Backend: LangGraph Runtime       | [ ]    |                                                                                                                                                                                                                           |
 | 08      | Backend: Lead Agent              | [ ]    |                                                                                                                                                                                                                           |
 | 09      | Backend: Middleware Pipeline     | [ ]    |                                                                                                                                                                                                                           |

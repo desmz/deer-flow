@@ -69,6 +69,8 @@ class AuthContext:
         permissions: List of permission strings (e.g., "threads:read")
     """
 
+    # [DL-NOTE] __slots__ avoids a per-instance __dict__; AuthContext is created on every request
+    # so the memory saving is meaningful at scale.
     __slots__ = ("user", "permissions")
 
     def __init__(self, user: User | None = None, permissions: list[str] | None = None):
@@ -125,9 +127,13 @@ def _make_test_request_stub() -> Any:
     Used when decorated route handlers are invoked without FastAPI's
     request injection. Includes fields accessed by auth helpers.
     """
+    # [DL-NOTE] _deerflow_test_bypass_auth=True is checked by both require_auth and
+    # require_permission — it short-circuits the entire auth chain for direct unit calls.
     return SimpleNamespace(state=SimpleNamespace(), cookies={}, _deerflow_test_bypass_auth=True)
 
 
+# [DL-NOTE] _authenticate is the fallback path used when AuthMiddleware is not in the stack
+# (unit tests with bare FastAPI apps). In production, request.state.auth is already set.
 async def _authenticate(request: Request) -> AuthContext:
     """Authenticate request and return AuthContext.
 
@@ -144,6 +150,8 @@ async def _authenticate(request: Request) -> AuthContext:
     return AuthContext(user=user, permissions=_ALL_PERMISSIONS)
 
 
+# [DL-NOTE] require_auth has no production callsites in any router — all routes use
+# @require_permission, which authenticates internally. This exists as a public API extension point.
 def require_auth[**P, T](func: Callable[P, T]) -> Callable[P, T]:
     """Decorator that authenticates the request and enforces authentication.
 
@@ -251,6 +259,8 @@ def require_permission(
             if getattr(request, "_deerflow_test_bypass_auth", False):
                 return await func(*args, **kwargs)
 
+            # [DL-INSIGHT] Short-circuit: if AuthMiddleware already set request.state.auth,
+            # skip the entire JWT decode + DB lookup pipeline on this request.
             auth: AuthContext = getattr(request.state, "auth", None)
             if auth is None:
                 auth = await _authenticate(request)
@@ -283,11 +293,15 @@ def require_permission(
                 from app.gateway.deps import get_thread_store
 
                 thread_store = get_thread_store(request)
+                # [DL-INSIGHT] require_existing=True guards destructive ops: a missing thread row
+                # counts as denial, preventing a deleted thread from being retargeted by another user.
                 allowed = await thread_store.check_access(
                     thread_id,
                     str(auth.user.id),
                     require_existing=require_existing,
                 )
+                # [DL-INSIGHT] 404 not 403: denied ownership looks like "not found" to prevent
+                # confirming that the thread exists for a different user.
                 if not allowed:
                     raise HTTPException(
                         status_code=404,

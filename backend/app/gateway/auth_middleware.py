@@ -31,6 +31,8 @@ _PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
 
 # Exact auth paths that are public (login/register/status check).
 # /api/v1/auth/me, /api/v1/auth/change-password etc. are NOT public.
+# [DL-NOTE] frozenset gives O(1) membership; logout is public — it clears the cookie without
+# needing a valid JWT (clearing an invalid cookie should always succeed).
 _PUBLIC_EXACT_PATHS: frozenset[str] = frozenset(
     {
         "/api/v1/auth/login/local",
@@ -43,6 +45,8 @@ _PUBLIC_EXACT_PATHS: frozenset[str] = frozenset(
 
 
 def _is_public(path: str) -> bool:
+    # [DL-NOTE] Exact-path match uses stripped (trailing-slash tolerance); prefix match uses
+    # original path — startswith("/health") already handles /health/ naturally.
     stripped = path.rstrip("/")
     if stripped in _PUBLIC_EXACT_PATHS:
         return True
@@ -77,6 +81,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         internal_user = None
+        # [DL-INSIGHT] IM channels (Feishu, Slack, etc.) running in the same process bypass JWT
+        # using a process-local HMAC token. See: app/gateway/internal_auth.py
         if is_valid_internal_auth_token(request.headers.get(INTERNAL_AUTH_HEADER_NAME)):
             internal_user = get_internal_user()
 
@@ -103,6 +109,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # propagate from AuthErrorCode, not get flattened into one
         # generic code. BaseHTTPMiddleware doesn't let HTTPException
         # bubble up, so we catch and render it as JSONResponse here.
+        # [DL-INSIGHT] Deferred import breaks a circular dependency: deps.py imports authz which
+        # is in the same package — module-level import would deadlock at startup.
         from app.gateway.deps import get_current_user_from_request
 
         if internal_user is not None:
@@ -118,7 +126,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # None" branch short-circuits instead of running the entire
         # JWT-decode + DB-lookup pipeline a second time per request).
         request.state.user = user
+        # [DL-INSIGHT] _ALL_PERMISSIONS seeds every authenticated session with full access — this
+        # layer only does authentication. Per-resource ownership enforcement is in authz.py.
         request.state.auth = AuthContext(user=user, permissions=_ALL_PERMISSIONS)
+        # [DL-INSIGHT] Contextvar propagates user_id into repository-layer owner filters and memory
+        # system; finally-block reset prevents contamination across concurrent async requests.
         token = set_current_user(user)
         try:
             return await call_next(request)

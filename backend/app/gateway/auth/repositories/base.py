@@ -5,6 +5,9 @@ from abc import ABC, abstractmethod
 from app.gateway.auth.models import User
 
 
+# [DL-INSIGHT] Subclasses LookupError (not Exception directly) so existing callers
+# that catch LookupError for "missing entity" keep working, while callers that need
+# to distinguish a concurrent-delete race can pin to this specific class.
 class UserNotFoundError(LookupError):
     """Raised when a user repository operation targets a non-existent row.
 
@@ -61,6 +64,9 @@ class UserRepository(ABC):
         """
         raise NotImplementedError
 
+    # [DL-INSIGHT] Asymmetric error handling: get_* returns None for a soft miss,
+    # but update_user raises UserNotFoundError — updating a missing row is always
+    # a race condition or a bug, never a normal flow.
     @abstractmethod
     async def update_user(self, user: User) -> User:
         """Update an existing user.
@@ -83,6 +89,8 @@ class UserRepository(ABC):
         """Return total number of registered users."""
         raise NotImplementedError
 
+    # [DL-NOTE] Used as the first-boot sentinel: app.py startup and initialize_admin
+    # endpoint both call this to detect whether the system needs initial setup.
     @abstractmethod
     async def count_admin_users(self) -> int:
         """Return number of users with system_role == 'admin'."""

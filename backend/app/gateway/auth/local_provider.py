@@ -21,6 +21,9 @@ class LocalAuthProvider(AuthProvider):
         """
         self._repo = repository
 
+    # [DL-INSIGHT] Every failure path returns None regardless of the reason
+    # (missing field / user not found / OAuth user / wrong password) — the caller
+    # cannot distinguish which case failed, preventing user enumeration attacks.
     async def authenticate(self, credentials: dict) -> User | None:
         """Authenticate with email and password.
 
@@ -52,10 +55,12 @@ class LocalAuthProvider(AuthProvider):
                 user.password_hash = await hash_password_async(password)
                 await self._repo.update_user(user)
             except Exception:
-                # Rehash is an opportunistic upgrade; a transient DB error must not
-                # prevent an otherwise-valid login from succeeding.
+                # [DL-INSIGHT] Broad exception catch is deliberate: rehash is an opportunistic
+                # upgrade. A transient DB failure must not block a valid login from succeeding.
                 logger.warning("Failed to rehash password for user %s; login will still succeed", user.email, exc_info=True)
 
+        # [DL-NOTE] Returns User as-is, including needs_setup=True if set.
+        # The caller (login endpoint) is responsible for checking needs_setup.
         return user
 
     async def get_user(self, user_id: str) -> User | None:
@@ -74,6 +79,8 @@ class LocalAuthProvider(AuthProvider):
         Returns:
             Created User instance
         """
+        # [DL-NOTE] password=None creates an OAuth user with no local password —
+        # password_hash is stored as NULL, and authenticate() will reject any login attempt.
         password_hash = await hash_password_async(password) if password else None
         user = User(
             email=email,

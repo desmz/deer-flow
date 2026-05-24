@@ -26,6 +26,8 @@ router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 # ── Request/Response Models ──────────────────────────────────────────────
 
 
+# [DL-INSIGHT] Token is deliberately absent from this response; it is set as an HttpOnly cookie
+# so JavaScript cannot read it — eliminates XSS-based token theft at the API contract level.
 class LoginResponse(BaseModel):
     """Response model for login — token only lives in HttpOnly cookie."""
 
@@ -33,6 +35,8 @@ class LoginResponse(BaseModel):
     needs_setup: bool = False
 
 
+# [DL-NOTE] Intentionally a small in-process frozenset — fast O(1) lookup, zero I/O.
+# Full HIBP/passlib checks are deliberately excluded: this is a cheap lower-bound defense.
 # Top common-password blocklist. Drawn from the public SecLists "10k worst
 # passwords" set, lowercased + length>=8 only (shorter ones already fail
 # the min_length check). Kept tight on purpose: this is the **lower bound**
@@ -90,6 +94,8 @@ def _password_is_common(password: str) -> bool:
     return password.lower() in _COMMON_PASSWORDS
 
 
+# [DL-INSIGHT] Free-function pattern avoids validator inheritance: RegisterRequest and
+# InitializeAdminRequest share no "is-a" relationship — only this one rule.
 def _validate_strong_password(value: str) -> str:
     """Pydantic field-validator body shared by Register + ChangePassword.
 
@@ -135,6 +141,10 @@ def _set_session_cookie(response: Response, token: str, request: Request) -> Non
     """Set the access_token HttpOnly cookie on the response."""
     config = get_auth_config()
     is_https = is_secure_request(request)
+    # [DL-INSIGHT] max_age is only set under HTTPS — over plain HTTP the cookie becomes session-only
+    # (browser-lifetime), reducing the risk of a persistent token surviving an unencrypted session.
+    # [DL-NOTE] samesite="lax" allows cross-site GETs (nav links) but blocks cross-site POSTs —
+    # the right balance for a JWT cookie that does not rely on SameSite=Strict UX friction.
     response.set_cookie(
         key="access_token",
         value=token,
@@ -147,6 +157,10 @@ def _set_session_cookie(response: Response, token: str, request: Request) -> Non
 
 # ── Rate Limiting ────────────────────────────────────────────────────────
 # In-process dict — not shared across workers.
+#
+# [DL-WARN] Multi-worker weakness: each worker has its own lockout table, so an attacker
+# gets N × _MAX_LOGIN_ATTEMPTS guesses (N = worker count). Replace with Redis or a DB
+# counter for production multi-worker setups to enforce a true per-IP limit.
 #
 # **Limitation**: with multi-worker deployments (e.g., gunicorn -w N), each
 # worker maintains its own lockout table, so an attacker effectively gets
@@ -161,6 +175,8 @@ _LOCKOUT_SECONDS = 300  # 5 minutes
 _login_attempts: dict[str, tuple[int, float]] = {}
 
 
+# [DL-NOTE] Read live (not cached at import time) so monkeypatch.setenv works in tests
+# and runtime env-var changes take effect without a restart.
 def _trusted_proxies() -> list:
     """Parse ``AUTH_TRUSTED_PROXIES`` env var into a list of ip_network objects.
 
@@ -205,6 +221,9 @@ def _get_client_ip(request: Request) -> str:
     client-controlled at the *first* hop and the trust chain is harder to
     audit per-request.
     """
+    # [DL-INSIGHT] Two-tier IP resolution: TCP peer is ground truth; X-Real-IP is only trusted
+    # when the TCP peer is in AUTH_TRUSTED_PROXIES — prevents clients from spoofing the header
+    # in direct-gateway mode and bypassing per-IP rate limits.
     peer_host = request.client.host if request.client else None
 
     trusted = _trusted_proxies()
@@ -234,6 +253,8 @@ def _check_rate_limit(ip: str) -> None:
                 status_code=429,
                 detail="Too many login attempts. Try again later.",
             )
+        # [DL-NOTE] Expired lockout: evict here rather than in a background cleanup task.
+        # Lazy eviction on access avoids the complexity of a timer thread.
         del _login_attempts[ip]
 
 
@@ -242,6 +263,8 @@ _MAX_TRACKED_IPS = 10000
 
 def _record_login_failure(ip: str) -> None:
     """Record a failed login attempt for the given IP."""
+    # [DL-NOTE] Two-phase eviction: first remove expired lockouts, then if still over limit,
+    # discard the oldest half — bounding memory to ~10 k entries in adversarial conditions.
     # Evict expired lockouts when dict grows too large
     if len(_login_attempts) >= _MAX_TRACKED_IPS:
         now = time.time()
@@ -260,6 +283,8 @@ def _record_login_failure(ip: str) -> None:
         _login_attempts[ip] = (1, 0.0)
     else:
         new_count = record[0] + 1
+        # [DL-NOTE] lock_until=0.0 means "not yet locked"; only set a real timestamp once
+        # the threshold is crossed so _check_rate_limit can distinguish tracking vs active lockout.
         lock_until = time.time() + _LOCKOUT_SECONDS if new_count >= _MAX_LOGIN_ATTEMPTS else 0.0
         _login_attempts[ip] = (new_count, lock_until)
 
@@ -276,6 +301,8 @@ def _record_login_success(ip: str) -> None:
 async def login_local(
     request: Request,
     response: Response,
+    # [DL-NOTE] OAuth2PasswordRequestForm uses the "username" field by spec; DeerFlow maps it
+    # to email — callers must send email in the "username" form field.
     form_data: OAuth2PasswordRequestForm = Depends(),
 ):
     """Local email/password login."""
@@ -292,6 +319,8 @@ async def login_local(
         )
 
     _record_login_success(client_ip)
+    # [DL-NOTE] token_version is embedded in the JWT so auth_middleware can reject tokens
+    # issued before the last password change. See: auth/jwt.py
     token = create_access_token(str(user.id), token_version=user.token_version)
     _set_session_cookie(response, token, request)
 
@@ -308,6 +337,8 @@ async def register(request: Request, response: Response, body: RegisterRequest):
     The first admin is created explicitly through /initialize. This endpoint creates regular users.
     Auto-login by setting the session cookie.
     """
+    # [DL-INSIGHT] Register always produces 'user' role — privilege separation from /initialize
+    # means an attacker who finds an open registration endpoint cannot self-elevate to admin.
     try:
         user = await get_local_provider().create_user(email=body.email, password=body.password, system_role="user")
     except ValueError:
@@ -360,6 +391,9 @@ async def change_password(request: Request, response: Response, body: ChangePass
 
     # Update password + bump version
     user.password_hash = await hash_password_async(body.new_password)
+    # [DL-INSIGHT] Incrementing token_version invalidates all previously issued JWTs for this user
+    # without a blacklist — stateless revocation. All active sessions on other devices are
+    # immediately kicked out. See: auth/models.py token_version field.
     user.token_version += 1
 
     # Clear setup flag if this is the setup flow
@@ -382,6 +416,8 @@ async def get_me(request: Request):
     return UserResponse(id=str(user.id), email=user.email, system_role=user.system_role, needs_setup=user.needs_setup)
 
 
+# [DL-NOTE] Separate cooldown dict from login rate limiting — setup-status is unauthenticated
+# and maps to a different threat model (enumeration of fresh installs), so its TTL is longer (60 s).
 _SETUP_STATUS_COOLDOWN: dict[str, float] = {}
 _SETUP_STATUS_COOLDOWN_SECONDS = 60
 _MAX_TRACKED_SETUP_STATUS_IPS = 10000
@@ -446,7 +482,9 @@ async def initialize_admin(request: Request, response: Response, body: Initializ
     try:
         user = await get_local_provider().create_user(email=body.email, password=body.password, system_role="admin", needs_setup=False)
     except ValueError:
-        # DB unique-constraint race: another concurrent request beat us.
+        # [DL-NOTE] Race-safe: count_admin_users passed but a concurrent request created the
+        # admin between the check and the INSERT. The DB unique constraint fires as a ValueError;
+        # we map it to 409 so both racers get the same idempotent error.
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=AuthErrorResponse(code=AuthErrorCode.SYSTEM_ALREADY_INITIALIZED, message="System already initialized").model_dump(),
@@ -459,6 +497,9 @@ async def initialize_admin(request: Request, response: Response, body: Initializ
 
 
 # ── OAuth Endpoints (Future/Placeholder) ─────────────────────────────────
+
+# [DL-NOTE] OAuth stubs exist to reserve the URL shape in the API contract — no implementation
+# yet. See auth/models.py for the oauth_provider / oauth_id fields that will back them.
 
 
 @router.get("/oauth/{provider}")

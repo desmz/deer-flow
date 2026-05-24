@@ -32,6 +32,8 @@ async def _run(email: str | None) -> int:
         init_engine_from_config,
     )
 
+    # [DL-NOTE] Bootstraps the full persistence engine from config.yaml — this CLI
+    # runs outside the Gateway process, so it must init the engine itself.
     config = get_app_config()
     await init_engine_from_config(config.database)
     try:
@@ -65,7 +67,11 @@ async def _run(email: str | None) -> int:
 
         new_password = secrets.token_urlsafe(16)
         user.password_hash = hash_password(new_password)
+        # [DL-INSIGHT] token_version += 1 invalidates all existing JWT sessions for this
+        # user immediately — any token carrying the old version will be rejected by deps.py.
         user.token_version += 1
+        # [DL-NOTE] needs_setup=True forces the setup flow on next login so the operator
+        # is prompted to choose a new email + password via the change_password endpoint.
         user.needs_setup = True
         await repo.update_user(user)
 
@@ -75,6 +81,8 @@ async def _run(email: str | None) -> int:
         print("Next login will require setup (new email + password).")
         return 0
     finally:
+        # [DL-NOTE] finally block ensures the DB connection pool is released even if
+        # an exception occurs mid-script — avoids leaked connections in the CLI context.
         await close_engine()
 
 
