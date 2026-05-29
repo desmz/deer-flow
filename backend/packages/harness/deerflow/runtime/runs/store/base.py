@@ -14,6 +14,9 @@ import abc
 from typing import Any
 
 
+# [DL-INSIGHT] RunStore is separate from RunManager by design: RunManager holds live mutable state
+# (asyncio.Task, asyncio.Event, abort flags) while RunStore persists only serializable metadata.
+# This split lets the in-memory registry stay fast while persistence is optional and swappable.
 class RunStore(abc.ABC):
     @abc.abstractmethod
     async def put(
@@ -24,6 +27,8 @@ class RunStore(abc.ABC):
         assistant_id: str | None = None,
         user_id: str | None = None,
         model_name: str | None = None,
+        # [DL-NOTE] `status` is a raw str here, not RunStatus enum — intentional decoupling so
+        # the store layer has no dependency on runtime.runs.schemas.
         status: str = "pending",
         multitask_strategy: str = "reject",
         metadata: dict[str, Any] | None = None,
@@ -61,6 +66,9 @@ class RunStore(abc.ABC):
     async def delete(self, run_id: str) -> None:
         pass
 
+    # [DL-INSIGHT] update_run_completion is the run's final write — called once by worker.py when a run ends.
+    # Token accounting is split by caller (lead_agent / subagent / middleware) to enable per-caller analytics.
+    # first_human_message / last_ai_message enable a thread "preview" in the UI without re-querying messages.
     @abc.abstractmethod
     async def update_run_completion(
         self,
@@ -81,10 +89,13 @@ class RunStore(abc.ABC):
     ) -> None:
         pass
 
+    # [DL-NOTE] `before` is an ISO timestamp for crash-recovery: "give me all pending runs before time X."
+    # Currently untriggered in production code — only exercised by tests. Crash-recovery path is not yet wired.
     @abc.abstractmethod
     async def list_pending(self, *, before: str | None = None) -> list[dict[str, Any]]:
         pass
 
+    # [DL-NOTE] Powers GET /api/threads/{id}/token-usage. Breaks down by model and by caller (lead/subagent/middleware).
     @abc.abstractmethod
     async def aggregate_tokens_by_thread(self, thread_id: str) -> dict[str, Any]:
         """Aggregate token usage for completed runs in a thread.

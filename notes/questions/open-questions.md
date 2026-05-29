@@ -68,3 +68,46 @@ Running log of unresolved questions across all study sections.
 
 - **CSRF duplication** — `_check_csrf` in `langgraph_auth.py` duplicates the Double Submit Cookie logic from `CSRFMiddleware`. Is there a shared utility these could both call, or is the duplication intentional (no shared dependency between Gateway middleware and LangGraph auth handler)?
 - **`@auth.on` fires on both writes and reads** — the `value.setdefault("metadata", {})` mutation happens on every call, including read-only operations where `metadata` injection is meaningless. Does LangGraph's `Auth.on` provide a way to dispatch separately for reads vs writes, or is the unconditional mutation harmless?
+
+---
+
+## Section 07 — Backend: LangGraph Runtime (Phase 1 Primitives)
+
+- **`resolve_runtime_user_id` adoption gap** — only `summarization_hook.py` and `setup_agent_tool.py` call it today. `memory_middleware`, `uploads_middleware`, and `thread_data_middleware` still use `get_effective_user_id()` directly. Is this an intentional distinction (those middlewares are always in-task and safe), or a gradual migration in progress?
+- **`on_tool_start` no-op** — `RunJournal.on_tool_start` does nothing except debug logging. Given that `llm.tool.result` events exist, is a `llm.tool.call` event (capturing tool inputs before execution) planned?
+- **`record_middleware` callers** — `RunJournal.record_middleware()` is public API for middlewares to log state changes, but no callers were found in the initial grep of non-test files. Which middlewares actually call it?
+- **`converters.py` roadmap** — no production callers exist. The `langchain_to_openai_completion` function implements a full `/v1/chat/completions` response envelope. Is an OpenAI-compatible API endpoint on the roadmap, or was this an abandoned experiment?
+
+## Section 07 — Backend: LangGraph Runtime (Phases 2 & 3 — Checkpointer & Store)
+
+- **`make_store()` missing `database:` config path** — `make_checkpointer()` supports the unified `database:` section as a second-tier fallback; `make_store()` only reads `app_config.checkpointer`. A `database:`-only deployment gets a real checkpointer backend but an in-memory store, silently losing thread metadata and user memory on restart.
+- **Two config sources for sync providers** — `get_checkpointer()` reads the module-global `_checkpointer_config`; `checkpointer_context()` reads `AppConfig.checkpointer` from the Pydantic object. Tests that call `set_checkpointer_config()` affect `get_checkpointer()` but not `checkpointer_context()`. Intentional asymmetry or should they unify?
+- **`POSTGRES_CONN_REQUIRED` error message** — the store raises `"checkpointer.connection_string is required"` even though the user has no `checkpointer:` section to look at. Should say `store` or `database` depending on the caller context.
+- **Blocking `ensure_sqlite_parent_dir` in async paths** — three out of four async providers call it synchronously on the event loop (only `checkpointer/async_provider._async_checkpointer` correctly offloads via `asyncio.to_thread`). Likely harmless in practice but worth auditing.
+- **`_async_checkpointer_from_database` vs `_async_checkpointer` for `ensure_sqlite_parent_dir`** — the legacy path uses `asyncio.to_thread`; the unified path does not. Intentional decision (e.g., the unified path is newer and never got the same review) or an oversight?
+
+## Section 07 — Backend: LangGraph Runtime (Phase 4 — Run Event Store)
+
+- **`list_messages_by_run` cursor divergence** — uses two separate `if` statements (allowing simultaneous `before_seq` + `after_seq` range queries), while `list_messages` uses `if/elif` (only one cursor active). No test covers both cursors at once. Is simultaneous range filtering intentional contract, or an oversight replicated from memory → JSONL → DB?
+- **`list_events` 500-item limit with no `has_more`** — the hard limit of 500 is returned without a pagination signal. Long runs with heavy tool use could silently truncate the trace. Should there be a `has_more` bool or a streaming read path for large event streams?
+- **`_max_seq_for_thread` concurrent-write guarantee** — a test (`test_postgres_max_seq_uses_advisory_lock_without_for_update`) verifies the advisory-lock path is taken, but does not verify correctness under actual concurrent writes. Is there a race test against the SQLite path where `FOR UPDATE` behaviour is exercised?
+- **`put_batch` cross-thread assumption** — the comment "assume all events in batch belong to same thread" is a correctness invariant, not validated in code. `RunJournal._flush_sync` always buffers events for a single run (hence a single thread), so the assumption holds today. But if a future caller batches across threads the seq counter will corrupt silently.
+- **`_ensure_seq_loaded` cold-start cost (JSONL)** — on first write after a process restart, the JSONL store scans all `.jsonl` files for the thread to find the max seq. For a long-lived thread with hundreds of runs, this could block the event loop for a noticeable duration. No cap or async offload exists.
+- **`delete_by_run` seq gap behaviour** — deleting a run leaves a gap in the seq sequence for that thread. All three backends (memory, JSONL, DB) share this behaviour. The `UniqueConstraint("thread_id", "seq")` in the DB model confirms gaps are intentional, but pagination cursors that assume contiguous seqs could break if any consumer ever relies on that assumption.
+
+## Section 07 — Backend: LangGraph Runtime (Phase 5 — Run Storage)
+
+- **`RunStatus.timeout` is never written** — it is defined in `schemas.py` and exported, but no callsite in `worker.py` or `manager.py` transitions a run to `timeout`. Is it set by an external caller (e.g., the channels system via `runs.wait()` timeout), or is it dead code reserved for a future watchdog?
+- **`list_pending` is untriggered in production** — both `MemoryRunStore` and `RunRepository` implement `list_pending` and tests exercise it, but `RunManager` never calls it. Is crash-recovery on the roadmap and the method is forward-looking infrastructure, or is it vestigial from an earlier design?
+- **`RunStore` dict return schema has no formal contract** — `get()` and `list_by_thread()` return `dict[str, Any]`. `RunRepository.sql.py` explicitly remaps columns to match `MemoryRunStore`'s layout, confirming the dict keys are the implicit contract. Should there be a Pydantic/dataclass model formalising this shape, or does the Gateway router serve as the accidental enforcer?
+- **Token counts for `interrupted`/`timeout` runs are excluded from `aggregate_tokens_by_thread`** — only `success` and `error` runs contribute. Tokens consumed by a run that timed out or was interrupted are silently dropped from thread-level reporting. Is this intentional (interrupted runs are partial; their token counts are unreliable)?
+
+---
+
+## Section 07 — Run Orchestration (`worker.py` + `manager.py`)
+
+- **`list_by_thread` ordering bug**: The docstring says "newest first" and the internal comment describes a reversal, but the code returns oldest-first (dict insertion order). Tests confirm oldest-first. Do any callers depend on the undocumented oldest-first behaviour? Should the docstring be corrected or the code fixed?
+- **`_extract_human_message` dead code in `worker.py`**: Defined but never called anywhere. Was it used when the journal manually recorded human message events before the LangChain callback approach? Safe to delete?
+- **`"events"` stream_mode gap**: `astream()` cannot produce events + values simultaneously; the JS LangGraph Platform server works around this via internal checkpoint callbacks not exposed in the Python API. Is there a tracking issue or plan to bridge this for the Python harness?
+- **`RunManager.cleanup` is not scheduled in `services.py`**: The 300-second default cleanup delay exists but is never wired in the HTTP path. Do run records accumulate in `_runs` for the process lifetime, or is there a background sweep elsewhere?
+- **`cancel()` skips the store write**: `cancel()` updates `record.status` in-memory but defers the store write to the worker's `finally` block. If the worker process crashes after `task.cancel()` but before the finally runs, the store records the run as still `running`. Is crash-recovery via `list_pending` intended to fix these orphaned records?

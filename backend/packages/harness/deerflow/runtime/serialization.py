@@ -23,7 +23,8 @@ def serialize_lc_object(obj: Any) -> Any:
         return {k: serialize_lc_object(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
         return [serialize_lc_object(item) for item in obj]
-    # Pydantic v2
+    # [DL-INSIGHT] Pydantic v2 probe first, fall through to v1. try/except is defensive
+    # because unusual model_dump() overrides (e.g. custom validators) can raise.
     if hasattr(obj, "model_dump"):
         try:
             return obj.model_dump()
@@ -35,7 +36,9 @@ def serialize_lc_object(obj: Any) -> Any:
             return obj.dict()
         except Exception:
             pass
-    # Last resort
+    # [DL-NOTE] Never-throw guarantee: str() -> repr() ensures the SSE pipeline never
+    # silently drops an event because an unknown object type failed to serialize.
+    # The SSE connection stays alive, the client keeps receiving data, and the system never silently drops an event due to a serialization crash.
     try:
         return str(obj)
     except Exception:
@@ -50,6 +53,8 @@ def serialize_channel_values(channel_values: dict[str, Any]) -> dict[str, Any]:
     """
     result: dict[str, Any] = {}
     for key, value in channel_values.items():
+        # [DL-INSIGHT] Strips LangGraph's internal pregel state keys, mirroring what the
+        # LangGraph Platform API returns. Callers never see graph-engine internals.
         if key.startswith("__pregel_") or key == "__interrupt__":
             continue
         result[key] = serialize_lc_object(value)
@@ -58,6 +63,8 @@ def serialize_channel_values(channel_values: dict[str, Any]) -> dict[str, Any]:
 
 def serialize_messages_tuple(obj: Any) -> Any:
     """Serialize a messages-mode tuple ``(chunk, metadata)``."""
+    # [DL-NOTE] LangGraph stream_mode="messages-tuple" yields (chunk, metadata_dict).
+    # Non-dict metadata is normalized to {} to guard against unexpected API changes.
     if isinstance(obj, tuple) and len(obj) == 2:
         chunk, metadata = obj
         return [serialize_lc_object(chunk), metadata if isinstance(metadata, dict) else {}]
@@ -71,6 +78,8 @@ def serialize(obj: Any, *, mode: str = "") -> Any:
     * ``values`` — obj is the full state dict; ``__pregel_*`` keys stripped
     * everything else — recursive ``model_dump()`` / ``dict()`` fallback
     """
+    # [DL-INSIGHT] mode= maps 1:1 to LangGraph stream_mode strings. worker.py passes
+    # the active stream_mode directly, making this the single SSE serialization facade.
     if mode == "messages":
         return serialize_messages_tuple(obj)
     if mode == "values":

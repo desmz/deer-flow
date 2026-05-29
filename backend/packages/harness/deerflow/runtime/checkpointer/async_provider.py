@@ -25,6 +25,8 @@ from collections.abc import AsyncIterator
 from langgraph.types import Checkpointer
 
 from deerflow.config.app_config import AppConfig, get_app_config
+# [DL-NOTE] Imports error constants from provider.py rather than redefining them — ensures
+# both sync and async paths emit identical actionable install instructions.
 from deerflow.runtime.checkpointer.provider import (
     POSTGRES_CONN_REQUIRED,
     POSTGRES_INSTALL,
@@ -55,6 +57,8 @@ async def _async_checkpointer(config) -> AsyncIterator[Checkpointer]:
             raise ImportError(SQLITE_INSTALL) from exc
 
         conn_str = resolve_sqlite_conn_str(config.connection_string or "store.db")
+        # [DL-NOTE] mkdir is a blocking filesystem call — offloaded to a thread to avoid
+        # stalling the event loop. The sync provider calls it directly (acceptable there).
         await asyncio.to_thread(ensure_sqlite_parent_dir, conn_str)
         async with AsyncSqliteSaver.from_conn_string(conn_str) as saver:
             await saver.setup()
@@ -71,6 +75,9 @@ async def _async_checkpointer(config) -> AsyncIterator[Checkpointer]:
         if not config.connection_string:
             raise ValueError(POSTGRES_CONN_REQUIRED)
 
+        # [DL-INSIGHT] autocommit=True required by LangGraph's Postgres checkpointer.
+        # prepare_threshold=0 disables psycopg3 server-side statement caching — it conflicts
+        # with autocommit mode and causes errors on repeated checkpointer calls.
         async with AsyncConnectionPool(
             conninfo=config.connection_string,
             max_size=20,
@@ -105,6 +112,8 @@ async def _async_checkpointer_from_database(db_config) -> AsyncIterator[Checkpoi
             raise ImportError(SQLITE_INSTALL) from exc
 
         conn_str = db_config.checkpointer_sqlite_path
+        # [DL-WARN] Calls ensure_sqlite_parent_dir directly (blocking) rather than via
+        # asyncio.to_thread — inconsistent with _async_checkpointer above.
         ensure_sqlite_parent_dir(conn_str)
         async with AsyncSqliteSaver.from_conn_string(conn_str) as saver:
             await saver.setup()
@@ -153,6 +162,9 @@ async def make_checkpointer(app_config: AppConfig | None = None) -> AsyncIterato
     if app_config is None:
         app_config = get_app_config()
 
+    # [DL-INSIGHT] Three-tier config priority: (1) legacy standalone checkpointer: section →
+    # (2) unified database: section → (3) InMemorySaver default. The legacy path is kept so
+    # existing config.yaml files with a checkpointer: block work unchanged.
     # Legacy: standalone checkpointer config takes precedence
     if app_config.checkpointer is not None:
         async with _async_checkpointer(app_config.checkpointer) as saver:
@@ -160,6 +172,10 @@ async def make_checkpointer(app_config: AppConfig | None = None) -> AsyncIterato
             return
 
     # Unified database config
+    # [DL-NOTE] getattr guards against older AppConfig versions that lack the database field.
+    # The != "memory" check skips the factory path when no real DB is configured — DatabaseConfig
+    # always has a default backend="memory", so without this guard every unconfigured deployment
+    # would take the database factory path and yield InMemorySaver redundantly.
     db_config = getattr(app_config, "database", None)
     if db_config is not None and db_config.backend != "memory":
         async with _async_checkpointer_from_database(db_config) as saver:

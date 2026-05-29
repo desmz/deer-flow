@@ -14,11 +14,13 @@ from .base import END_SENTINEL, HEARTBEAT_SENTINEL, StreamBridge, StreamEvent
 logger = logging.getLogger(__name__)
 
 
+# [DL-NOTE] Not frozen: events list, ended flag, and start_offset are all mutated by publish/publish_end — needs Condition for safety
 @dataclass
 class _RunStream:
     events: list[StreamEvent] = field(default_factory=list)
     condition: asyncio.Condition = field(default_factory=asyncio.Condition)
     ended: bool = False
+    # [DL-INSIGHT] Absolute position of events[0] in run history; advances when events evicted; lets reconnecting subscribers detect gaps
     start_offset: int = 0
 
 
@@ -48,6 +50,7 @@ class MemoryStreamBridge(StreamBridge):
         seq = self._counters[run_id] - 1
         return f"{ts}-{seq}"
 
+    # [DL-NOTE] Linear scan for last_event_id in retained buffer; if evicted, warns and falls back to start_offset (earliest available)
     def _resolve_start_offset(self, stream: _RunStream, last_event_id: str | None) -> int:
         if last_event_id is None:
             return stream.start_offset
@@ -70,6 +73,7 @@ class MemoryStreamBridge(StreamBridge):
         entry = StreamEvent(id=self._next_id(run_id), event=event, data=data)
         async with stream.condition:
             stream.events.append(entry)
+            # [DL-INSIGHT] Ring buffer: evict from front, advance start_offset — reconnecting subs detect gaps via _resolve_start_offset
             if len(stream.events) > self._maxsize:
                 overflow = len(stream.events) - self._maxsize
                 del stream.events[:overflow]
@@ -103,6 +107,7 @@ class MemoryStreamBridge(StreamBridge):
                     )
                     next_offset = stream.start_offset
 
+                # [DL-INSIGHT] Absolute-to-relative: next_offset is a run-wide cursor; local_index maps into the retained events slice
                 local_index = next_offset - stream.start_offset
                 if 0 <= local_index < len(stream.events):
                     entry = stream.events[local_index]
@@ -111,10 +116,12 @@ class MemoryStreamBridge(StreamBridge):
                     entry = END_SENTINEL
                 else:
                     try:
+                        # [DL-NOTE] condition.wait() releases the lock atomically while suspended — producer can publish without deadlock
                         await asyncio.wait_for(stream.condition.wait(), timeout=heartbeat_interval)
                     except TimeoutError:
                         entry = HEARTBEAT_SENTINEL
                     else:
+                        # [DL-NOTE] Notified (not timed out): re-enter loop to re-check events and ended state under the lock
                         continue
 
             if entry is END_SENTINEL:

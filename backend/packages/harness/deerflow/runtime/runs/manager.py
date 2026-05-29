@@ -32,13 +32,18 @@ class RunRecord:
     kwargs: dict = field(default_factory=dict)
     created_at: str = ""
     updated_at: str = ""
+    # [DL-NOTE] repr=False prevents asyncio.Task from appearing in log/debug output.
     task: asyncio.Task | None = field(default=None, repr=False)
+    # [DL-NOTE] Per-record event: worker polls abort_event.is_set() between chunks;
+    # abort_action ("interrupt" | "rollback") tells the worker what to do when it fires.
     abort_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     abort_action: str = "interrupt"
     error: str | None = None
     model_name: str | None = None
 
 
+# [DL-INSIGHT] Two-tier design: RunRecord holds live, non-serialisable state (asyncio.Task, asyncio.Event)
+# that exists only for the process lifetime; RunStore mirrors only serialisable fields for persistence.
 class RunManager:
     """In-memory run registry with optional persistent RunStore backing.
 
@@ -52,6 +57,8 @@ class RunManager:
         self._lock = asyncio.Lock()
         self._store = store
 
+    # [DL-NOTE] All persistence is best-effort: store failures are logged but never propagated.
+    # A DB hiccup must not crash a live run; the in-memory registry is the source of truth.
     async def _persist_to_store(self, record: RunRecord) -> None:
         """Best-effort persist run record to backing store."""
         if self._store is None:
@@ -110,10 +117,13 @@ class RunManager:
         logger.info("Run created: run_id=%s thread_id=%s", run_id, thread_id)
         return record
 
+    # [DL-NOTE] Lock-free read: safe in asyncio (single event loop thread); no await between read and use.
     def get(self, run_id: str) -> RunRecord | None:
         """Return a run record by ID, or ``None``."""
         return self._runs.get(run_id)
 
+    # [DL-WARN] Docstring says "newest first" but the list comprehension does not reverse.
+    # Result is oldest-first (dict insertion order). Tests confirm oldest-first behaviour.
     async def list_by_thread(self, thread_id: str) -> list[RunRecord]:
         """Return all runs for a given thread, newest first."""
         async with self._lock:
@@ -132,6 +142,7 @@ class RunManager:
             record.updated_at = _now_iso()
             if error is not None:
                 record.error = error
+        # [DL-NOTE] Store write happens outside the lock to avoid holding it across IO.
         if self._store is not None:
             try:
                 await self._store.update_status(run_id, status.value, error=error)
@@ -151,6 +162,8 @@ class RunManager:
         await self._persist_to_store(record)
         logger.info("Run %s model_name=%s", run_id, model_name)
 
+    # [DL-INSIGHT] cancel() sets abort_event + cancels the asyncio.Task but does NOT write to the store.
+    # The worker's CancelledError/finally path calls set_status(interrupted), which does the store write.
     async def cancel(self, run_id: str, *, action: str = "interrupt") -> bool:
         """Request cancellation of a run.
 
@@ -176,6 +189,8 @@ class RunManager:
         logger.info("Run %s cancelled (action=%s)", run_id, action)
         return True
 
+    # [DL-INSIGHT] create_or_reject holds the lock across the inflight-check AND the insert to eliminate
+    # the TOCTOU race that two separate "check then create" calls would have under concurrent requests.
     async def create_or_reject(
         self,
         thread_id: str,
@@ -249,6 +264,8 @@ class RunManager:
         async with self._lock:
             return any(r.thread_id == thread_id and r.status in (RunStatus.pending, RunStatus.running) for r in self._runs.values())
 
+    # [DL-NOTE] 300s default is intentionally longer than bridge.cleanup's 60s: clients may poll
+    # run status via GET /runs/{id} after the SSE stream ends; the record must outlive the buffer.
     async def cleanup(self, run_id: str, *, delay: float = 300) -> None:
         """Remove a run record after an optional delay."""
         if delay > 0:

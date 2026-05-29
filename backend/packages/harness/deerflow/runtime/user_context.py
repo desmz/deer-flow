@@ -38,6 +38,8 @@ from contextvars import ContextVar, Token
 from typing import Final, Protocol, runtime_checkable
 
 
+# [DL-INSIGHT] Protocol lives in the harness (not in app.gateway) so persistence layers
+# can resolve the current user's id without importing across the harness/app boundary.
 @runtime_checkable
 class CurrentUser(Protocol):
     """Structural type for the current authenticated user.
@@ -49,9 +51,13 @@ class CurrentUser(Protocol):
     id: str
 
 
+# [DL-NOTE] ContextVar is task-local under asyncio — each FastAPI request is its own task
+# and inherits a clean context. asyncio.create_task / to_thread propagate the value.
 _current_user: Final[ContextVar[CurrentUser | None]] = ContextVar("deerflow_current_user", default=None)
 
 
+# [DL-NOTE] Token/reset idiom: auth_middleware.py calls set, stores the token, and
+# resets in a finally block — prevents user context from leaking between requests.
 def set_current_user(user: CurrentUser) -> Token[CurrentUser | None]:
     """Set the current user for this async task.
 
@@ -109,6 +115,8 @@ def get_effective_user_id() -> str:
     return str(user.id)
 
 
+# [DL-INSIGHT] Preferred over get_effective_user_id() for tools persisting user state.
+# runtime.context["user_id"] is the only channel that survives thread-pool boundaries.
 def resolve_runtime_user_id(runtime: object | None) -> str:
     """Single source of truth for a tool/middleware's effective user_id.
 
@@ -146,6 +154,8 @@ def resolve_runtime_user_id(runtime: object | None) -> str:
 # behaviours; see the docstring on :func:`resolve_user_id`.
 
 
+# [DL-INSIGHT] Singleton sentinel distinguishes "caller omitted user_id" from None
+# (bypass isolation) and "" (actual id). isinstance check in resolve_user_id is safe.
 class _AutoSentinel:
     """Singleton marker meaning 'resolve user_id from contextvar'."""
 

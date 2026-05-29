@@ -29,6 +29,8 @@ class DbRunEventStore(RunEventStore):
     @staticmethod
     def _row_to_dict(row: RunEventRow) -> dict:
         d = row.to_dict()
+        # [DL-NOTE] ORM column is named "event_metadata" (avoids shadowing SQLAlchemy internals);
+        # interface contract uses "metadata". Rename happens here at the DB boundary.
         d["metadata"] = d.pop("event_metadata", {})
         val = d.get("created_at")
         if isinstance(val, datetime):
@@ -46,6 +48,10 @@ class DbRunEventStore(RunEventStore):
                 logger.debug("Failed to deserialize content as JSON for event seq=%s", d.get("seq"))
         return d
 
+    # [DL-INSIGHT] Truncation applies ONLY to category="trace" (LLM I/O, tool output) — never to
+    # category="message" (user/AI chat turns). Trace events can be arbitrarily large (full LLM
+    # prompts); messages must be stored intact for display. Byte-level truncation with
+    # errors="ignore" handles multi-byte Unicode without raising on a cut codepoint.
     def _truncate_trace(self, category: str, content: Any, metadata: dict | None) -> tuple[Any, dict]:
         if category == "trace":
             text = content if isinstance(content, str) else json.dumps(content, default=str, ensure_ascii=False)
@@ -56,6 +62,9 @@ class DbRunEventStore(RunEventStore):
                 metadata = {**(metadata or {}), "content_truncated": True, "original_byte_length": len(encoded)}
         return content, metadata or {}
 
+    # [DL-NOTE] Two flags distinguish list vs dict content on read: content_is_json=True means
+    # "deserialize this string"; content_is_dict=True means "result is a dict, not a list".
+    # The DB column is TEXT — structured content is serialized here and restored in _row_to_dict.
     @staticmethod
     def _content_to_db(content: Any, metadata: dict | None) -> tuple[str, dict]:
         metadata = metadata or {}
@@ -83,6 +92,9 @@ class DbRunEventStore(RunEventStore):
         to a VARCHAR column ("type 'UUID' is not supported") — the
         INSERT would silently roll back and the worker would hang.
         """
+        # [DL-INSIGHT] Soft read (None on miss) for writes vs hard resolve_user_id(AUTO) for reads.
+        # Background workers write with user_id=NULL; HTTP handlers read with user_id scoped to auth.
+        # Rows written as NULL are still accessible to admin/migration queries (resolve_user_id(None)).
         user = get_current_user()
         return str(user.id) if user is not None else None
 
@@ -100,12 +112,18 @@ class DbRunEventStore(RunEventStore):
         dialect_name = bind.dialect.name if bind is not None else ""
 
         if dialect_name == "postgresql":
+            # [DL-INSIGHT] pg_advisory_xact_lock serializes concurrent writers per thread_id.
+            # hashtext() maps an arbitrary string to bigint (PostgreSQL's lock key type).
+            # The lock is transaction-scoped (xact_lock) — released automatically on commit/rollback,
+            # so no manual cleanup is needed and no deadlock risk from forgetting to release.
             await session.execute(
                 text("SELECT pg_advisory_xact_lock(hashtext(CAST(:thread_id AS text))::bigint)"),
                 {"thread_id": thread_id},
             )
             return await session.scalar(stmt)
 
+        # [DL-NOTE] FOR UPDATE on an aggregate is the SQLite path. It serializes by locking
+        # the scanned rows — works for SQLite's single-writer model, rejected by PostgreSQL.
         return await session.scalar(stmt.with_for_update())
 
     async def put(self, *, thread_id, run_id, event_type, category, content="", metadata=None, created_at=None):  # noqa: D401
@@ -138,6 +156,10 @@ class DbRunEventStore(RunEventStore):
                 session.add(row)
             return self._row_to_dict(row)
 
+    # [DL-INSIGHT] One transaction, one lock acquisition, N INSERTs — the contrast with put() which
+    # opens a transaction per event. RunJournal flushes in batches of up to 20, so this typically
+    # replaces 20 separate lock round-trips with 1. The comment "assume same thread" is load-bearing:
+    # a batch spanning two thread_ids would assign seq from the first thread's counter to both.
     async def put_batch(self, events):
         if not events:
             return []
@@ -171,6 +193,9 @@ class DbRunEventStore(RunEventStore):
                     rows.append(row)
             return [self._row_to_dict(r) for r in rows]
 
+    # [DL-INSIGHT] user_id parameter is NOT in the base interface — it extends RunEventStore with
+    # per-user data isolation at the DB level. resolve_user_id(AUTO) reads the ContextVar set by
+    # auth middleware; resolves to None only when called with user_id=None (admin/migration paths).
     async def list_messages(
         self,
         thread_id,
@@ -196,6 +221,9 @@ class DbRunEventStore(RunEventStore):
                 result = await session.execute(stmt)
                 return [self._row_to_dict(r) for r in result.scalars()]
         else:
+            # [DL-NOTE] DESC + reversed() avoids a subquery offset: fetching the last N rows by
+            # sorting descending, taking the top N, then reversing in Python yields ascending output
+            # without the O(offset) scan that ORDER BY ASC OFFSET k would require.
             # before_seq or default (latest): take last `limit` records, return ascending
             stmt = stmt.order_by(RunEventRow.seq.desc()).limit(limit)
             async with self._sf() as session:

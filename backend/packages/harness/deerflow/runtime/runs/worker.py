@@ -37,10 +37,13 @@ from .schemas import RunStatus
 
 logger = logging.getLogger(__name__)
 
-# Valid stream_mode values for LangGraph's graph.astream()
+# [DL-NOTE] "events" is deliberately absent: astream() can't produce events + values snapshots
+# simultaneously; that requires astream_events() + internal checkpoint callbacks (JS server only).
 _VALID_LG_MODES = {"values", "updates", "checkpoints", "tasks", "debug", "messages", "custom"}
 
 
+# [DL-INSIGHT] setdefault merges caller context without letting callers override thread_id/run_id.
+# Security property tested in test_build_runtime_context_caller_cannot_override_thread_id_or_run_id.
 def _build_runtime_context(
     thread_id: str,
     run_id: str,
@@ -68,6 +71,8 @@ def _build_runtime_context(
     return runtime_ctx
 
 
+# [DL-INSIGHT] DI container pattern: bundles all run infrastructure into one frozen object so
+# run_agent's signature stays stable as new singletons (event_store, thread_store, …) are added.
 @dataclass(frozen=True)
 class RunContext:
     """Infrastructure dependencies for a single agent run.
@@ -104,6 +109,7 @@ def _compute_agent_factory_supports_app_config(agent_factory: Any) -> bool:
         return False
 
 
+# [DL-NOTE] Caches inspect.signature() calls per factory callable to avoid re-evaluating on each run.
 @lru_cache(maxsize=128)
 def _cached_agent_factory_supports_app_config(agent_factory: Any) -> bool:
     return _compute_agent_factory_supports_app_config(agent_factory)
@@ -178,7 +184,8 @@ async def run_agent(
         # 1. Mark running
         await run_manager.set_status(run_id, RunStatus.running)
 
-        # Snapshot the latest pre-run checkpoint so rollback can restore it.
+        # [DL-INSIGHT] Pre-run snapshot enables user-triggered rollback: if abort_action=="rollback",
+        # _rollback_to_pre_run_checkpoint restores this exact state, effectively undoing the run.
         if checkpointer is not None:
             try:
                 config_for_check = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
@@ -210,6 +217,8 @@ async def run_agent(
         from langchain_core.runnables import RunnableConfig
         from langgraph.runtime import Runtime
 
+        # [DL-INSIGHT] Worker builds Runtime manually because it drives graph.astream() directly;
+        # langgraph-cli would do this automatically, but the harness bypasses the CLI path.
         # Inject runtime context so middlewares and tools (via ToolRuntime.context) can
         # access thread-level data. langgraph-cli does this automatically; we must do it
         # manually here because we drive the graph through ``agent.astream(config=...)``
@@ -219,6 +228,8 @@ async def run_agent(
         runtime = Runtime(context=cast(Any, runtime_ctx), store=store)
         config.setdefault("configurable", {})["__pregel_runtime"] = runtime
 
+        # [DL-INSIGHT] Journal hooks into the standard LangChain callback bus (not a custom event bus),
+        # so on_llm_end / on_chain_start get called automatically by every LLM invocation.
         # Inject RunJournal as a LangChain callback handler.
         # on_llm_end captures token usage; on_chain_start/end captures lifecycle.
         if journal is not None:
@@ -230,6 +241,8 @@ async def run_agent(
         else:
             agent = agent_factory(config=runnable_config)
 
+        # [DL-NOTE] Allowlist enforcement in agent.py may silently downgrade the requested model;
+        # this detects the mismatch and persists the actual model used to the run record.
         # Capture the effective (resolved) model name from the agent's metadata.
         # _resolve_model_name in agent.py may return the default model if the
         # requested name is not in the allowlist — this update ensures the
@@ -280,10 +293,14 @@ async def run_agent(
         logger.info("Run %s: streaming with modes %s (requested: %s)", run_id, lg_modes, requested_modes)
 
         # 7. Stream using graph.astream
+        # [DL-NOTE] Fast path: single mode + no subgraphs → astream yields raw chunks, not tuples.
+        # Multi-mode or subgraphs path yields (mode, chunk) or (ns, mode, chunk) tuples instead.
         if len(lg_modes) == 1 and not stream_subgraphs:
             # Single mode, no subgraphs: astream yields raw chunks
             single_mode = lg_modes[0]
             async for chunk in agent.astream(graph_input, config=runnable_config, stream_mode=single_mode):
+                # [DL-INSIGHT] Cooperative cancellation: abort is detected between chunks, not during
+                # the LLM call itself. A long inference cannot be interrupted mid-generation.
                 if record.abort_event.is_set():
                     logger.info("Run %s abort requested — stopping", run_id)
                     break
@@ -378,6 +395,8 @@ async def run_agent(
             except Exception:
                 logger.warning("Failed to persist run completion for %s (non-fatal)", run_id, exc_info=True)
 
+        # [DL-INSIGHT] Title lives in checkpoint channel_values["title"] (set by TitleMiddleware);
+        # this finally block reads it and syncs to thread_meta so the UI can display it.
         # Sync title from checkpoint to threads_meta.display_name
         if checkpointer is not None and thread_store is not None:
             try:
@@ -400,6 +419,8 @@ async def run_agent(
                 logger.debug("Failed to update thread_meta status for %s (non-fatal)", thread_id)
 
         await bridge.publish_end(run_id)
+        # [DL-NOTE] 60-second grace window: slow SSE clients can drain their backlog before
+        # the bridge releases in-memory event buffers for this run.
         asyncio.create_task(bridge.cleanup(run_id, delay=60))
 
 
@@ -408,6 +429,8 @@ async def run_agent(
 # ---------------------------------------------------------------------------
 
 
+# [DL-NOTE] Adapter for sync/async checkpointers: tries the async method first, then sync.
+# Needed because LangGraph exposes both interfaces (e.g. InMemorySaver is sync-only).
 async def _call_checkpointer_method(checkpointer: Any, async_name: str, sync_name: str, *args: Any, **kwargs: Any) -> Any:
     """Call a checkpointer method, supporting async and sync variants."""
     method = getattr(checkpointer, async_name, None) or getattr(checkpointer, sync_name, None)
@@ -529,6 +552,8 @@ def _lg_mode_to_sse_event(mode: str) -> str:
     return mode
 
 
+# [DL-WARN] This function is defined but not called anywhere in this file or its callers.
+# Likely dead code from a previous journal event recording approach — safe to remove.
 def _extract_human_message(graph_input: dict) -> HumanMessage | None:
     """Extract or construct a HumanMessage from graph_input for event recording.
 

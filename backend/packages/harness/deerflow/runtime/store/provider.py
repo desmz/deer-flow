@@ -39,6 +39,8 @@ SQLITE_STORE_INSTALL = "langgraph-checkpoint-sqlite is required for the SQLite s
 POSTGRES_STORE_INSTALL = (
     "langgraph-checkpoint-postgres is required for the PostgreSQL store. Install the package extra with: pip install 'deerflow-harness[postgres]' (or use: uv sync --all-packages --extra postgres when developing locally)"
 )
+# [DL-WARN] Error message says "checkpointer.connection_string" even when raised for the store —
+# misleading for a user who configured only the store path. Store reuses the checkpointer config key.
 POSTGRES_CONN_REQUIRED = "checkpointer.connection_string is required for the postgres backend"
 
 # ---------------------------------------------------------------------------
@@ -46,6 +48,8 @@ POSTGRES_CONN_REQUIRED = "checkpointer.connection_string is required for the pos
 # ---------------------------------------------------------------------------
 
 
+# [DL-INSIGHT] The store accepts CheckpointerConfig (not a dedicated StoreConfig). Store and
+# checkpointer always share the same backend — one config section governs both.
 @contextlib.contextmanager
 def _sync_store_cm(config) -> Iterator[BaseStore]:
     """Context manager that creates and tears down a sync Store.
@@ -134,10 +138,14 @@ def get_store() -> BaseStore:
     if config is None:
         from langgraph.store.memory import InMemoryStore
 
+        # [DL-NOTE] WARNING (not INFO like the checkpointer) — an in-memory store means users
+        # lose their thread list on restart. The checkpointer fallback is less user-visible.
         logger.warning("No 'checkpointer' section in config.yaml — using InMemoryStore for the store. Thread list will be lost on server restart. Configure a sqlite or postgres backend for persistence.")
         _store = InMemoryStore()
         return _store
 
+    # [DL-NOTE] app_config.py always calls reset_store() alongside reset_checkpointer() when
+    # config changes — they're treated as a coupled pair; See: deerflow/config/app_config.py
     _store_ctx = _sync_store_cm(config)
     _store = _store_ctx.__enter__()
     return _store
@@ -164,6 +172,9 @@ def reset_store() -> None:
 # ---------------------------------------------------------------------------
 
 
+# [DL-QUESTION] store_context() reads config.checkpointer from AppConfig directly, while
+# get_store() reads from the module-global _checkpointer_config — the same two-source
+# asymmetry as checkpointer/provider.py. See: runtime/checkpointer/provider.py
 @contextlib.contextmanager
 def store_context() -> Iterator[BaseStore]:
     """Sync context manager that yields a Store and cleans up on exit.

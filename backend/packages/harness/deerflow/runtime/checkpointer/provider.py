@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 # Error message constants — imported by aio.provider too
 # ---------------------------------------------------------------------------
 
+# [DL-NOTE] Module-level constants rather than local strings so async_provider.py can
+# import them directly — both sync and async paths share identical actionable error messages.
 SQLITE_INSTALL = "langgraph-checkpoint-sqlite is required for the SQLite checkpointer. Install it with: uv add langgraph-checkpoint-sqlite"
 POSTGRES_INSTALL = (
     "langgraph-checkpoint-postgres is required for the PostgreSQL checkpointer. Install the package extra with: pip install 'deerflow-harness[postgres]' (or use: uv sync --all-packages --extra postgres when developing locally)"
@@ -71,6 +73,8 @@ def _sync_checkpointer_cm(config: CheckpointerConfig) -> Iterator[Checkpointer]:
         conn_str = resolve_sqlite_conn_str(config.connection_string or "store.db")
         ensure_sqlite_parent_dir(conn_str)
         with SqliteSaver.from_conn_string(conn_str) as saver:
+            # [DL-NOTE] setup() creates LangGraph's checkpoint schema tables. Required before
+            # any graph.invoke(); both SQLite and Postgres backends need this call.
             saver.setup()
             logger.info("Checkpointer: using SqliteSaver (%s)", conn_str)
             yield saver
@@ -98,6 +102,8 @@ def _sync_checkpointer_cm(config: CheckpointerConfig) -> Iterator[Checkpointer]:
 # Sync singleton
 # ---------------------------------------------------------------------------
 
+# [DL-INSIGHT] Two module globals: _checkpointer holds the live instance; _checkpointer_ctx
+# holds the open context manager so the backend connection stays alive for the process lifetime.
 _checkpointer: Checkpointer | None = None
 _checkpointer_ctx = None  # open context manager keeping the connection alive
 
@@ -124,6 +130,9 @@ def get_checkpointer() -> Checkpointer:
 
     config = get_checkpointer_config()
 
+    # [DL-INSIGHT] Test-isolation gate: only loads config.yaml when NEITHER app_config NOR
+    # checkpointer_config is set. Tests calling set_checkpointer_config() bypass this load,
+    # staying isolated from any ambient config.yaml present on the developer's machine.
     if config is None and _app_config is None:
         # Only load app config lazily when neither the app config nor an explicit
         # checkpointer config has been initialized yet. This keeps tests that
@@ -142,6 +151,8 @@ def get_checkpointer() -> Checkpointer:
         _checkpointer = InMemorySaver()
         return _checkpointer
 
+    # [DL-INSIGHT] Singleton lifecycle: enters the CM once and stores it in _checkpointer_ctx.
+    # The backend connection (SQLite file handle / Postgres pool) stays open until reset_checkpointer().
     _checkpointer_ctx = _sync_checkpointer_cm(config)
     _checkpointer = _checkpointer_ctx.__enter__()
 
@@ -157,6 +168,8 @@ def reset_checkpointer() -> None:
     global _checkpointer, _checkpointer_ctx
     if _checkpointer_ctx is not None:
         try:
+            # [DL-NOTE] (None, None, None) = normal CM exit (no exception). Exception swallowed
+            # intentionally — cleanup is best-effort; the singleton is cleared regardless.
             _checkpointer_ctx.__exit__(None, None, None)
         except Exception:
             logger.warning("Error during checkpointer cleanup", exc_info=True)
@@ -169,6 +182,9 @@ def reset_checkpointer() -> None:
 # ---------------------------------------------------------------------------
 
 
+# [DL-QUESTION] checkpointer_context() reads config.checkpointer from AppConfig directly,
+# while get_checkpointer() reads from the module-global _checkpointer_config. Tests that call
+# set_checkpointer_config() affect get_checkpointer() but NOT checkpointer_context().
 @contextlib.contextmanager
 def checkpointer_context() -> Iterator[Checkpointer]:
     """Sync context manager that yields a checkpointer and cleans up on exit.

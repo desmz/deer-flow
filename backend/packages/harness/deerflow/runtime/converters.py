@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+# [DL-WARN] Not re-exported from deerflow.runtime.__init__ and has no production callers.
+# Dormant infrastructure — available but not yet wired into any live code path.
 _ROLE_MAP = {
     "human": "user",
     "ai": "assistant",
@@ -55,11 +57,14 @@ def langchain_to_openai_message(message: Any) -> dict:
                         "type": "function",
                         "function": {
                             "name": tc.get("name", ""),
+                            # [DL-NOTE] LangChain stores args as a dict; OpenAI wire format
+                            # requires a JSON-serialized string. Guard for pre-stringified args.
                             "arguments": json.dumps(args) if not isinstance(args, str) else args,
                         },
                     }
                 )
-            # If no text content, set content to null per OpenAI spec
+            # [DL-NOTE] OpenAI spec: content must be null (not "") when tool_calls are present
+            # and there is no accompanying text. Non-empty list content (multimodal) is kept.
             result["content"] = content if (isinstance(content, list) and content) or (isinstance(content, str) and content) else None
             result["tool_calls"] = openai_tool_calls
         else:
@@ -88,6 +93,8 @@ def _infer_finish_reason(message: Any) -> str:
     return "stop"
 
 
+# [DL-NOTE] Response envelope mirrors OpenAI /v1/chat/completions shape — id, model,
+# choices[], usage. Renames LangChain's input_tokens/output_tokens to prompt/completion.
 def langchain_to_openai_completion(message: Any) -> dict:
     """Convert an AIMessage and its metadata to an OpenAI completion response dict.
 

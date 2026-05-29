@@ -69,7 +69,9 @@ class RunJournal(BaseCallbackHandler):
         self._subagent_tokens = 0
         self._middleware_tokens = 0
 
-        # Dedup: LangChain may fire on_llm_end multiple times for the same run_id
+        # [DL-WARN] LangChain can fire on_llm_end multiple times for the same run_id
+        # (streaming batches, callback propagation up the chain). Three separate sets
+        # prevent token double-counting and duplicate message summaries.
         self._counted_llm_run_ids: set[str] = set()
         self._counted_external_source_ids: set[str] = set()
         self._counted_message_llm_run_ids: set[str] = set()
@@ -314,6 +316,8 @@ class RunJournal(BaseCallbackHandler):
                 self._put(event_type="llm.tool.result", category="message", content=msg.model_dump())
                 self._record_message_summary(msg)
             elif isinstance(output, Command):
+                # [DL-NOTE] LangGraph tools can return a Command (state delta) instead of a
+                # plain ToolMessage. Command.update["messages"] holds the ToolMessages.
                 cmd = cast(Command, output)
                 messages = cmd.update.get("messages", [])
                 for message in messages:
@@ -344,6 +348,9 @@ class RunJournal(BaseCallbackHandler):
         if len(self._buffer) >= self._flush_threshold:
             self._flush_sync()
 
+    # [DL-INSIGHT] BaseCallbackHandler is synchronous but RunEventStore is async.
+    # _flush_sync bridges this via fire-and-forget tasks when a loop is running.
+    # If no loop is available, events wait in _buffer for flush() in worker.py's finally.
     def _flush_sync(self) -> None:
         """Best-effort flush of buffer to RunEventStore.
 
@@ -391,6 +398,9 @@ class RunJournal(BaseCallbackHandler):
             logger.warning("Journal flush task failed: %s", exc)
 
     def _identify_caller(self, tags: list[str] | None) -> str:
+        # [DL-NOTE] Tags are injected into LangChain config by the call site, not here.
+        # Middlewares pass config["tags"] = ["middleware:name"]; subagents pass "subagent:name".
+        # The main agent graph injects no tag — "lead_agent" is the fallback default.
         _tags = tags or []
         for tag in _tags:
             if isinstance(tag, str) and (tag.startswith("subagent:") or tag.startswith("middleware:") or tag == "lead_agent"):
@@ -402,6 +412,8 @@ class RunJournal(BaseCallbackHandler):
 
     # -- Public methods (called by worker) --
 
+    # [DL-NOTE] Subagents run their own SubagentTokenCollector (not this journal).
+    # task_tool.py calls this after the subagent finishes to merge usage into the parent run.
     def record_external_llm_usage_records(
         self,
         records: list[dict[str, int | str]],

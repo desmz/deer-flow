@@ -219,11 +219,56 @@ Outside auth/ — enforcement layer:
 
 | Path                                                       | Status | Notes                                                                              |
 | ---------------------------------------------------------- | ------ | ---------------------------------------------------------------------------------- |
-| `backend/packages/harness/deerflow/runtime/`               | `[ ]`  | Runtime package root: RunManager, journal, converters, serialization, user_context |
-| `backend/packages/harness/deerflow/runtime/checkpointer/`  | `[ ]`  | Async state persistence for LangGraph graph checkpoints                            |
-| `backend/packages/harness/deerflow/runtime/stream_bridge/` | `[ ]`  | Bridges LangGraph event stream to SSE (async_provider, memory, base)               |
-| `backend/packages/harness/deerflow/runtime/runs/`          | `[ ]`  | RunManager, worker, schemas, run store                                             |
-| `backend/packages/harness/deerflow/runtime/events/`        | `[ ]`  | Run event types, store, and pagination                                             |
+| `backend/packages/harness/deerflow/runtime/`               | `[x]`  | Runtime package root: RunManager, journal, converters, serialization, user_context |
+| `backend/packages/harness/deerflow/runtime/checkpointer/`  | `[x]`  | Async state persistence for LangGraph graph checkpoints                            |
+| `backend/packages/harness/deerflow/runtime/stream_bridge/` | `[x]`  | Bridges LangGraph event stream to SSE (async_provider, memory, base)               |
+| `backend/packages/harness/deerflow/runtime/runs/`          | `[x]`  | RunManager, worker, schemas, run store                                             |
+| `backend/packages/harness/deerflow/runtime/events/`        | `[x]`  | Run event types, store, and pagination                                             |
+| `backend/packages/harness/deerflow/runtime/store/`         | `[x]`  | KV persistence layer: sync provider, async provider, SQLite utilities              |
+
+**Study order:**
+
+Phase 1 — Primitives (no intra-package dependencies, read first so names are familiar):
+
+1. `runtime/serialization.py` — data serialization primitives used across the runtime
+2. `runtime/user_context.py` — how `user_id` is threaded through async context vars
+3. `runtime/converters.py` — LangGraph ↔ Gateway type conversions; depends on serialization
+4. `runtime/journal.py` — run audit log; lightweight, depends on user_context
+
+Phase 2 — Checkpointer (LangGraph graph state persistence):
+
+5. `runtime/checkpointer/provider.py` — sync checkpointer interface and SQLite impl
+6. `runtime/checkpointer/async_provider.py` — async wrapper over the sync provider
+
+Phase 3 — Store (key-value runtime persistence):
+
+7. `runtime/store/provider.py` — sync KV store interface
+8. `runtime/store/_sqlite_utils.py` — SQLite helpers shared by the store impls
+9. `runtime/store/async_provider.py` — async KV store (wraps provider with thread executor)
+
+Phase 4 — Run Events (event sourcing layer for a run's history):
+
+10. `runtime/events/store/base.py` — abstract event store interface
+11. `runtime/events/store/memory.py` — in-memory impl (used in tests)
+12. `runtime/events/store/jsonl.py` — JSONL file-backed impl
+13. `runtime/events/store/db.py` — DB-backed impl (default in production)
+
+Phase 5 — Run Storage (CRUD for run records):
+
+14. `runtime/runs/schemas.py` — run data shapes (input, output, status enums)
+15. `runtime/runs/store/base.py` — abstract run store interface
+16. `runtime/runs/store/memory.py` — in-memory run store (used in tests)
+
+Phase 6 — Stream Bridge (LangGraph events → SSE):
+
+17. `runtime/stream_bridge/base.py` — abstract stream bridge interface
+18. `runtime/stream_bridge/memory.py` — in-memory stream (write side + read side)
+19. `runtime/stream_bridge/async_provider.py` — async provider coordinating stream lifecycle
+
+Phase 7 — Run Orchestration (the top of the call stack):
+
+20. `runtime/runs/worker.py` — executes a single run inside LangGraph
+21. `runtime/runs/manager.py` — RunManager: the central coordinator (launch, cancel, stream)
 
 ---
 
@@ -795,7 +840,7 @@ Outside auth/ — enforcement layer:
 | 04      | Infrastructure & DevOps          | [~]    | `architecture/04-infrastructure-devops.md`                                                                                                                                                                                |
 | 05      | Backend: Gateway API             | [x]    | `modules/05a-gateway-api.md`, `modules/05b-api-endpoints-overview.md`, `modules/05-api-reference/`                                                                                                                        |
 | 06      | Backend: Auth & Authorization    | [x]    | `modules/06a-auth-internals.md`, `modules/06b-auth-enforcement.md`                                                                                                                                                        |
-| 07      | Backend: LangGraph Runtime       | [ ]    |                                                                                                                                                                                                                           |
+| 07      | Backend: LangGraph Runtime       | [x]    | `modules/07a-runtime-primitives.md`, `modules/07b-checkpointer-store.md`, `modules/07c-runtime-events.md`, `modules/07d-run-storage.md`, `modules/07e-stream-bridge.md`, `modules/07f-run-orchestration.md` |
 | 08      | Backend: Lead Agent              | [ ]    |                                                                                                                                                                                                                           |
 | 09      | Backend: Middleware Pipeline     | [ ]    |                                                                                                                                                                                                                           |
 | 10      | Backend: Memory System           | [ ]    |                                                                                                                                                                                                                           |

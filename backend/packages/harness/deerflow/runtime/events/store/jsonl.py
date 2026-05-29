@@ -23,6 +23,8 @@ from deerflow.runtime.events.store.base import RunEventStore
 
 logger = logging.getLogger(__name__)
 
+# [DL-NOTE] Validates IDs before building filesystem paths — prevents directory traversal
+# (e.g. thread_id="../../etc") since thread_id and run_id come from user-controlled API input.
 _SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_\-]+$")
 
 
@@ -50,6 +52,10 @@ class JsonlRunEventStore(RunEventStore):
         self._seq_counters[thread_id] = self._seq_counters.get(thread_id, 0) + 1
         return self._seq_counters[thread_id]
 
+    # [DL-INSIGHT] Unlike MemoryRunEventStore (counter always starts at 0), this store must
+    # survive process restarts — so the counter is lazily seeded from existing files on first
+    # write per thread. Without this, a restarted process would re-assign seq=1 and collide
+    # with events already on disk from the previous process.
     def _ensure_seq_loaded(self, thread_id: str) -> None:
         """Load max seq from existing files if not yet cached."""
         if thread_id in self._seq_counters:
@@ -67,12 +73,18 @@ class JsonlRunEventStore(RunEventStore):
                         continue
         self._seq_counters[thread_id] = max_seq
 
+    # [DL-WARN] Blocking file I/O (open + write) inside an async call — will stall the event
+    # loop for the duration of the write. Acceptable for the "lightweight single-node" use case
+    # but rules this backend out for high-concurrency production deployments.
     def _write_record(self, record: dict) -> None:
         path = self._run_file(record["thread_id"], record["run_id"])
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, default=str, ensure_ascii=False) + "\n")
 
+    # [DL-INSIGHT] This is the O(n_runs) slow path — scans EVERY run file for the thread to
+    # build the unified seq-ordered view. list_events() reads only ONE file (fast path).
+    # list_messages() must use this because messages from multiple runs share a single seq space.
     def _read_thread_events(self, thread_id: str) -> list[dict]:
         """Read all events for a thread, sorted by seq."""
         events = []
@@ -124,6 +136,8 @@ class JsonlRunEventStore(RunEventStore):
         self._write_record(record)
         return record
 
+    # [DL-NOTE] Calls await self.put() per event (vs MemoryRunEventStore which calls _put_one directly).
+    # _ensure_seq_loaded runs once (first call caches the counter), cheap dict lookup for the rest.
     async def put_batch(self, events):
         if not events:
             return []
@@ -169,6 +183,8 @@ class JsonlRunEventStore(RunEventStore):
         return sum(1 for e in all_events if e.get("category") == "message")
 
     async def delete_by_thread(self, thread_id):
+        # [DL-NOTE] Reads all events first just to compute the return count — an O(n) scan
+        # before the actual O(files) delete. No cheaper path exists without a separate count cache.
         all_events = self._read_thread_events(thread_id)
         count = len(all_events)
         thread_dir = self._thread_dir(thread_id)

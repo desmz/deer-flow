@@ -24,6 +24,9 @@ from collections.abc import AsyncIterator
 from langgraph.store.base import BaseStore
 
 from deerflow.config.app_config import AppConfig, get_app_config
+# [DL-NOTE] Imports sqlite utils from store.provider (not _sqlite_utils directly), making
+# async_provider an indirect dependent of provider. Compare: checkpointer/async_provider.py
+# imports from _sqlite_utils directly — the two packages are inconsistent here.
 from deerflow.runtime.store.provider import POSTGRES_CONN_REQUIRED, POSTGRES_STORE_INSTALL, SQLITE_STORE_INSTALL, ensure_sqlite_parent_dir, resolve_sqlite_conn_str
 
 logger = logging.getLogger(__name__)
@@ -54,6 +57,8 @@ async def _async_store(config) -> AsyncIterator[BaseStore]:
             raise ImportError(SQLITE_STORE_INSTALL) from exc
 
         conn_str = resolve_sqlite_conn_str(config.connection_string or "store.db")
+        # [DL-WARN] Blocking call on the event loop — should use asyncio.to_thread like
+        # checkpointer/async_provider._async_checkpointer does for the same operation.
         ensure_sqlite_parent_dir(conn_str)
 
         async with AsyncSqliteStore.from_conn_string(conn_str) as store:
@@ -71,6 +76,9 @@ async def _async_store(config) -> AsyncIterator[BaseStore]:
         if not config.connection_string:
             raise ValueError(POSTGRES_CONN_REQUIRED)
 
+        # [DL-INSIGHT] Store manages its own pool via from_conn_string — unlike the checkpointer
+        # which requires a manually configured AsyncConnectionPool(autocommit=True, prepare_threshold=0).
+        # AsyncPostgresStore encapsulates those requirements internally.
         async with AsyncPostgresStore.from_conn_string(config.connection_string) as store:
             await store.setup()
             logger.info("Store: using AsyncPostgresStore")
@@ -103,6 +111,9 @@ async def make_store(app_config: AppConfig | None = None) -> AsyncIterator[BaseS
     if app_config is None:
         app_config = get_app_config()
 
+    # [DL-QUESTION] make_store() only reads app_config.checkpointer — no support for the
+    # unified database: config section that make_checkpointer() supports. If a deployment
+    # uses only database: (not checkpointer:), the store always falls back to InMemoryStore.
     if app_config.checkpointer is None:
         from langgraph.store.memory import InMemoryStore
 

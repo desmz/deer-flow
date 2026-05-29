@@ -13,6 +13,9 @@ from deerflow.runtime.events.store.base import RunEventStore
 
 class MemoryRunEventStore(RunEventStore):
     def __init__(self) -> None:
+        # [DL-NOTE] Insertion order into the list IS seq order — no sort needed on read.
+        # A separate counter dict tracks the next seq per-thread rather than len(list) to
+        # survive delete_by_run, which leaves gaps without resetting the counter.
         self._events: dict[str, list[dict]] = {}  # thread_id -> sorted event list
         self._seq_counters: dict[str, int] = {}  # thread_id -> last assigned seq
 
@@ -22,6 +25,8 @@ class MemoryRunEventStore(RunEventStore):
         self._seq_counters[thread_id] = next_val
         return next_val
 
+    # [DL-INSIGHT] All async methods delegate to this sync helper — the "async" wrappers are purely
+    # for interface compliance. No I/O, no awaits needed; mutations are safe in a single event loop.
     def _put_one(
         self,
         *,
@@ -97,6 +102,9 @@ class MemoryRunEventStore(RunEventStore):
             filtered = [e for e in filtered if e["event_type"] in event_types]
         return filtered[:limit]
 
+    # [DL-WARN] Uses two separate `if` statements (not elif) — both before_seq and after_seq can
+    # apply simultaneously for a range query. list_messages uses elif so only one cursor applies.
+    # The interface docstring doesn't document this difference; callers should treat it as undefined.
     async def list_messages_by_run(self, thread_id, run_id, *, limit=50, before_seq=None, after_seq=None):
         all_events = self._events.get(thread_id, [])
         filtered = [e for e in all_events if e["run_id"] == run_id and e["category"] == "message"]
@@ -115,6 +123,8 @@ class MemoryRunEventStore(RunEventStore):
 
     async def delete_by_thread(self, thread_id):
         events = self._events.pop(thread_id, [])
+        # [DL-NOTE] Counter is reset here (whole thread gone), but NOT in delete_by_run —
+        # run deletion leaves seq gaps intentionally so the counter never rewinds.
         self._seq_counters.pop(thread_id, None)
         return len(events)
 

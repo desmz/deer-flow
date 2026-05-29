@@ -13,6 +13,10 @@ from __future__ import annotations
 
 import abc
 
+# [DL-INSIGHT] Two logical stores in one interface: category="message" is the display log
+# (consumed by frontend), category="trace"/"lifecycle" is the debug/audit log (DevTools).
+# A single physical store with a category filter keeps seq globally ordered across both uses.
+
 
 class RunEventStore(abc.ABC):
     """Run event stream storage interface.
@@ -39,6 +43,8 @@ class RunEventStore(abc.ABC):
     ) -> dict:
         """Write an event, auto-assign seq, return the complete record."""
 
+    # [DL-NOTE] put_batch is the hot path — RunJournal always writes in batches via _flush_sync.
+    # put() is used by callers that write a single event (e.g. worker.py run lifecycle events).
     @abc.abstractmethod
     async def put_batch(self, events: list[dict]) -> list[dict]:
         """Batch-write events. Used by RunJournal flush buffer.
@@ -47,6 +53,8 @@ class RunEventStore(abc.ABC):
         Returns complete records with seq assigned.
         """
 
+    # [DL-INSIGHT] seq is thread-scoped, not global. Two concurrent runs in the same thread
+    # share one seq counter — enabling cross-run conversation history in a single ordered view.
     @abc.abstractmethod
     async def list_messages(
         self,
@@ -100,6 +108,8 @@ class RunEventStore(abc.ABC):
     async def count_messages(self, thread_id: str) -> int:
         """Count displayable messages (category=message) in a thread."""
 
+    # [DL-NOTE] Delete is thread-granular (whole thread) or run-granular (one run within a thread).
+    # No field-level or category-level delete — callers cannot surgically remove individual events.
     @abc.abstractmethod
     async def delete_by_thread(self, thread_id: str) -> int:
         """Delete all events for a thread. Return the number of deleted events."""
