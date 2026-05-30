@@ -26,6 +26,8 @@ from deerflow.skills.types import Skill
 logger = logging.getLogger(__name__)
 
 
+# [DL-NOTE] Merges config["configurable"] (LangGraph convention) and config["context"] (DeerFlow extension).
+# DeerFlowClient can pass options via context without knowing LangGraph's configurable key convention.
 def _get_runtime_config(config: RunnableConfig) -> dict:
     """Merge legacy configurable options with LangGraph runtime context."""
     cfg = dict(config.get("configurable", {}) or {})
@@ -256,6 +258,8 @@ def _build_middlewares(
         List of middleware instances.
     """
     resolved_app_config = app_config or get_app_config()
+    # [DL-INSIGHT] Infrastructure middlewares (ThreadData, Sandbox, DanglingToolCall, ToolErrorHandling, etc.) are
+    # assembled by build_lead_runtime_middlewares; config-driven optional middlewares are appended below.
     middlewares = build_lead_runtime_middlewares(app_config=resolved_app_config, lazy_init=True)
 
     # Always inject current date (and optionally memory) as <system-reminder> into the
@@ -340,6 +344,8 @@ def _load_enabled_skills_for_tool_policy(available_skills: set[str] | None, *, a
     return [skill for skill in skills if skill.name in available_skills]
 
 
+# [DL-INSIGHT] LangGraph Server calls this per-request, not once at startup — a new agent graph is compiled on every run.
+# The single-parameter (config) signature is the LangGraph Server ABI; a test asserts this explicitly.
 def make_lead_agent(config: RunnableConfig):
     """LangGraph graph factory; keep the signature compatible with LangGraph Server."""
     runtime_config = _get_runtime_config(config)
@@ -370,6 +376,8 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     agent_model_name = agent_config.model if agent_config and agent_config.model else None
 
     # Final model name resolution: request → agent config → global default, with fallback for unknown names
+    # [DL-NOTE] Three-level priority: per-request name → custom agent config → global first model in config.yaml.
+    # Unknown names log a warning and silently fall back to the default rather than raising.
     model_name = _resolve_model_name(requested_model_name or agent_model_name, app_config=resolved_app_config)
 
     model_config = resolved_app_config.get_model_config(model_name)
@@ -408,8 +416,12 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
         }
     )
 
+    # [DL-WARN] Skill policy load is fail-closed: if skill metadata can't be read, agent creation raises entirely
+    # rather than defaulting to unrestricted tool access. See test_make_lead_agent_fails_closed_when_skill_policy_load_fails.
     skills_for_tool_policy = _load_enabled_skills_for_tool_policy(available_skills, app_config=resolved_app_config)
 
+    # [DL-NOTE] Bootstrap mode is the one-time custom agent creation flow: minimal tools + setup_agent only,
+    # no agent_name in prompt, only the "bootstrap" skill visible. Normal path handles default and named custom agents.
     if is_bootstrap:
         # Special bootstrap agent with minimal prompt for initial custom agent creation flow
         tools = get_available_tools(model_name=model_name, subagent_enabled=subagent_enabled, app_config=resolved_app_config) + [setup_agent]

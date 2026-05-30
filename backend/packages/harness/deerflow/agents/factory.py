@@ -58,6 +58,8 @@ _TODO_TOOL_DESCRIPTION = "Use this tool to create and manage a structured task l
 # ---------------------------------------------------------------------------
 
 
+# [DL-INSIGHT] SDK middle layer: sits between raw create_agent (model+tools+middleware) and make_lead_agent (reads config.yaml).
+# Purely argument-driven — no config files, no global singletons during assembly. All dependencies are caller-supplied.
 def create_deerflow_agent(
     model: BaseChatModel,
     tools: list[BaseTool] | None = None,
@@ -130,6 +132,8 @@ def create_deerflow_agent(
             extra_middleware=extra_middleware or [],
         )
         # Deduplicate by tool name — user-provided tools take priority.
+        # [DL-NOTE] User tools shadow feature-injected extras (view_image, task, ask_clarification) of the same name,
+        # allowing callers to override built-in tool implementations without conflict.
         existing_names = {t.name for t in effective_tools}
         for t in extra_tools:
             if t.name not in existing_names:
@@ -291,6 +295,8 @@ def _assemble_from_features(
         _insert_extra(chain, extra_middleware)
         # Invariant: ClarificationMiddleware must always be last.
         # @Next(ClarificationMiddleware) could push it off the tail.
+        # [DL-INSIGHT] Re-pins ClarificationMiddleware to the tail after _insert_extra runs.
+        # @Next(ClarificationMiddleware) is valid positioning syntax but must not break the tail invariant.
         clar_idx = next(i for i, m in enumerate(chain) if isinstance(m, ClarificationMiddleware))
         if clar_idx != len(chain) - 1:
             chain.append(chain.pop(clar_idx))
@@ -347,9 +353,13 @@ def _insert_extra(chain: list[AgentMiddleware], extras: list[AgentMiddleware]) -
     clarification_idx = next(i for i, m in enumerate(chain) if isinstance(m, ClarificationMiddleware))
     for mw in unanchored:
         chain.insert(clarification_idx, mw)
+        # [DL-WARN] Must increment: each insert shifts ClarificationMiddleware's index by 1.
+        # Without this, every unanchored middleware lands at the same slot (reversing insertion order).
         clarification_idx += 1
 
     # Anchored → iterative insertion (supports external-to-external anchoring)
+    # [DL-INSIGHT] Iterative approach allows A @Next(B) where B is itself an extra: round 1 inserts B into chain,
+    # round 2 resolves A's anchor. max_rounds = N+1 guarantees termination; no-progress detection catches cycles.
     pending = list(anchored)
     max_rounds = len(pending) + 1
     for _ in range(max_rounds):

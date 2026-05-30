@@ -284,12 +284,31 @@ Phase 7 — Run Orchestration (the top of the call stack):
 
 **Key files:**
 
-| Path                                                       | Status | Notes                                                    |
-| ---------------------------------------------------------- | ------ | -------------------------------------------------------- |
-| `backend/packages/harness/deerflow/agents/factory.py`      | `[ ]`  | Constructs the LangGraph agent graph                     |
-| `backend/packages/harness/deerflow/agents/lead_agent/`     | `[ ]`  | Lead agent: system prompt, agent definition, node wiring |
-| `backend/packages/harness/deerflow/agents/thread_state.py` | `[ ]`  | Full state schema flowing through the LangGraph graph    |
-| `backend/packages/harness/deerflow/agents/features.py`     | `[ ]`  | Feature flags controlling agent behaviour                |
+| Path                                                              | Status | Notes                                                                              |
+| ----------------------------------------------------------------- | ------ | ---------------------------------------------------------------------------------- |
+| `backend/packages/harness/deerflow/agents/thread_state.py`        | `[x]`  | Full state schema flowing through the LangGraph graph                              |
+| `backend/packages/harness/deerflow/agents/features.py`            | `[x]`  | Feature flags controlling agent behaviour                                          |
+| `backend/packages/harness/deerflow/agents/lead_agent/prompt.py`   | `[x]`  | System prompt assembly; primed eagerly at import time                              |
+| `backend/packages/harness/deerflow/agents/lead_agent/agent.py`    | `[x]`  | LangGraph node: calls model, handles tool calls, returns state updates             |
+| `backend/packages/harness/deerflow/agents/factory.py`             | `[x]`  | Wires the full LangGraph graph: nodes, edges, middleware wrapping                  |
+| `backend/packages/harness/deerflow/agents/__init__.py`            | `[x]`  | Package bootstrap: public API exports + eager skills cache priming on LangGraph import |
+
+**Study order:**
+
+Phase 1 — Primitives (data shapes and flags, no agent logic yet):
+
+1. `agents/thread_state.py` — full state schema; read first so field names are familiar everywhere else
+2. `agents/features.py` — feature flags that alter agent behaviour; shapes the mental model before reading any conditional logic
+
+Phase 2 — Lead agent internals (bottom-up within `lead_agent/`):
+
+3. `agents/lead_agent/prompt.py` — system prompt assembly; depends on thread_state and features
+4. `agents/lead_agent/agent.py` — the LangGraph node: calls model, handles tool calls, returns state updates
+
+Phase 3 — Graph assembly:
+
+5. `agents/factory.py` — wires the full LangGraph graph: nodes, edges, middleware wrapping
+6. `agents/__init__.py` — package bootstrap: understand what LangGraph sees on import and why the skills cache is primed here
 
 ---
 
@@ -841,7 +860,7 @@ Phase 7 — Run Orchestration (the top of the call stack):
 | 05      | Backend: Gateway API             | [x]    | `modules/05a-gateway-api.md`, `modules/05b-api-endpoints-overview.md`, `modules/05-api-reference/`                                                                                                                        |
 | 06      | Backend: Auth & Authorization    | [x]    | `modules/06a-auth-internals.md`, `modules/06b-auth-enforcement.md`                                                                                                                                                        |
 | 07      | Backend: LangGraph Runtime       | [x]    | `modules/07a-runtime-primitives.md`, `modules/07b-checkpointer-store.md`, `modules/07c-runtime-events.md`, `modules/07d-run-storage.md`, `modules/07e-stream-bridge.md`, `modules/07f-run-orchestration.md` |
-| 08      | Backend: Lead Agent              | [ ]    |                                                                                                                                                                                                                           |
+| 08      | Backend: Lead Agent              | [x]    | `modules/08a-lead-agent.md`, `modules/08b-skills-cache-pipeline.md`                                                                                                                                                       |
 | 09      | Backend: Middleware Pipeline     | [ ]    |                                                                                                                                                                                                                           |
 | 10      | Backend: Memory System           | [ ]    |                                                                                                                                                                                                                           |
 | 11      | Backend: Subagents               | [ ]    |                                                                                                                                                                                                                           |

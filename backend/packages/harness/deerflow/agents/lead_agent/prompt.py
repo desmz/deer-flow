@@ -16,6 +16,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# [DL-INSIGHT] Module-level skills cache uses a background refresh thread so the request path never blocks on disk I/O.
+# get_cached_enabled_skills() returns [] on miss and fires the loader; warm_enabled_skills_cache() blocks at startup only.
 _ENABLED_SKILLS_REFRESH_WAIT_TIMEOUT_SECONDS = 5.0
 _enabled_skills_lock = threading.Lock()
 _enabled_skills_cache: list[Skill] | None = None
@@ -51,6 +53,8 @@ def _refresh_enabled_skills_cache_worker() -> None:
             skills = []
 
         with _enabled_skills_lock:
+            # [DL-INSIGHT] Compare-and-swap loop: if another invalidation fired while loading,
+            # the version won't match — the worker loops and reloads rather than committing a stale result.
             if _enabled_skills_refresh_version == target_version:
                 _enabled_skills_cache = skills
                 _enabled_skills_refresh_active = False
@@ -123,6 +127,8 @@ def get_cached_enabled_skills() -> list[Skill]:
     if cached is not None:
         return list(cached)
 
+    # [DL-NOTE] Cache miss never blocks: starts the loader in the background and returns [] immediately.
+    # The caller (prompt assembly) gets an empty skills list this turn; the next call sees the warmed result.
     _ensure_enabled_skills_cache()
     return []
 
@@ -591,6 +597,8 @@ def _get_memory_context(agent_name: str | None = None, *, app_config: AppConfig 
         return ""
 
 
+# [DL-INSIGHT] Two-level cache: outer cache (by config identity, in get_enabled_skills_for_config) feeds this inner LRU
+# (keyed by hashable skill tuple). Invalidation calls cache_clear() here and clears the outer dict simultaneously.
 @lru_cache(maxsize=32)
 def _get_cached_skills_prompt_section(
     skill_signature: tuple[tuple[str, str, str, str], ...],
@@ -810,6 +818,8 @@ def apply_prompt_template(
     # Memory and current date are injected per-turn via DynamicContextMiddleware
     # as a <system-reminder> in the first HumanMessage, keeping this prompt
     # identical across users and sessions for maximum prefix-cache reuse.
+    # [DL-INSIGHT] Keeping the system prompt identical for all users/sessions is a deliberate prefix-cache strategy.
+    # If memory or date were embedded here, every user would get a unique prompt, busting the provider's cache.
     return SYSTEM_PROMPT_TEMPLATE.format(
         agent_name=agent_name or "DeerFlow 2.0",
         soul=get_agent_soul(agent_name),

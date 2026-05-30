@@ -1,5 +1,7 @@
 from typing import Annotated, NotRequired, TypedDict
 
+# [DL-NOTE] AgentState provides messages: Annotated[list[BaseMessage], add_messages] — the core conversation accumulator.
+# All 17 middlewares and the lead agent node share this single mutable state dict across the LangGraph turn.
 from langchain.agents import AgentState
 
 
@@ -25,6 +27,8 @@ def merge_artifacts(existing: list[str] | None, new: list[str] | None) -> list[s
     if new is None:
         return existing
     # Use dict.fromkeys to deduplicate while preserving order
+    # [DL-INSIGHT] existing comes first in the concat, so existing items keep their positions.
+    # Re-adding an already-present artifact path is a silent no-op — idempotent by design.
     return list(dict.fromkeys(existing + new))
 
 
@@ -39,16 +43,22 @@ def merge_viewed_images(existing: dict[str, ViewedImageData] | None, new: dict[s
     if new is None:
         return existing
     # Special case: empty dict means clear all viewed images
+    # [DL-INSIGHT] {} is a deliberate in-band clear signal. ViewImageMiddleware returns viewed_images={}
+    # after injecting images into the model call, so base64 blobs don't accumulate across turns.
     if len(new) == 0:
         return {}
     # Merge dictionaries, new values override existing ones for same keys
     return {**existing, **new}
 
 
+# [DL-INSIGHT] SandboxState and ThreadDataState partition state into middleware-owned slices,
+# preventing field-name collisions and making ownership explicit across the 17-middleware chain.
 class ThreadState(AgentState):
     sandbox: NotRequired[SandboxState | None]
     thread_data: NotRequired[ThreadDataState | None]
     title: NotRequired[str | None]
+    # [DL-NOTE] Annotated fields carry explicit reducers; NotRequired fields use last-write-wins.
+    # Only fields where multiple graph nodes append data concurrently need a reducer.
     artifacts: Annotated[list[str], merge_artifacts]
     todos: NotRequired[list | None]
     uploaded_files: NotRequired[list[dict] | None]

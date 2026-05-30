@@ -111,3 +111,12 @@ Running log of unresolved questions across all study sections.
 - **`"events"` stream_mode gap**: `astream()` cannot produce events + values simultaneously; the JS LangGraph Platform server works around this via internal checkpoint callbacks not exposed in the Python API. Is there a tracking issue or plan to bridge this for the Python harness?
 - **`RunManager.cleanup` is not scheduled in `services.py`**: The 300-second default cleanup delay exists but is never wired in the HTTP path. Do run records accumulate in `_runs` for the process lifetime, or is there a background sweep elsewhere?
 - **`cancel()` skips the store write**: `cancel()` updates `record.status` in-memory but defers the store write to the worker's `finally` block. If the worker process crashes after `task.cancel()` but before the finally runs, the store records the run as still `running`. Is crash-recovery via `list_pending` intended to fix these orphaned records?
+
+## Section 08 — Lead Agent
+
+- **`DynamicContextMiddleware` lazy import**: It is imported inside `_build_middlewares()` while all other middlewares are imported at the module top. Is this guarding against a circular import, and if so, which cycle?
+- **`get_enabled_skills_for_config` identity cache**: The outer cache keys by `id(app_config)`. If a config object is GC'd and a new object lands at the same address (CPython reuses addresses), would the cache serve a stale entry? Is this a real risk given config object lifetimes?
+- **`config["metadata"]` mutation**: `_make_lead_agent` mutates the dict in-place. Is LangGraph's `RunnableConfig` treated as immutable per invocation, or can this mutation propagate unexpectedly between nodes?
+- **Phase 2 config-free runtime**: The `create_deerflow_agent` docstring notes "Full config-free runtime is a Phase 2 goal" — some feature-injected tools (e.g. `task_tool`) still read global config at invocation time. Is there a tracking issue?
+- **`todos` untyped list**: `ThreadState.todos` is `NotRequired[list | None]` with no element type, unlike every other collection field. Is this intentional (dynamic shape) or a missed tightening?
+- **`__init__.py` import side effect in tests**: `prime_enabled_skills_cache()` starts a background thread on any import of `deerflow.agents`. How do tests that need to control this guard against it — via `sys.modules` mocks in `conftest.py`?
