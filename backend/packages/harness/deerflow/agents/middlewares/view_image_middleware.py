@@ -12,10 +12,16 @@ from deerflow.agents.thread_state import ThreadState
 logger = logging.getLogger(__name__)
 
 
+# [DL-NOTE] Empty subclass of ThreadState — exists only to give the middleware typed access to
+# viewed_images without redefining the field. The actual runtime state IS ThreadState.
 class ViewImageMiddlewareState(ThreadState):
     """Reuse the thread state so reducer-backed keys keep their annotations."""
 
 
+# [DL-INSIGHT] Two-step vision pattern: view_image tool stores base64 in state["viewed_images"] and
+# returns just "Successfully read image" in the ToolMessage (small, cheap). This middleware re-injects
+# the full base64 payload as a HumanMessage image_url block before the next LLM call (the expensive part
+# happens exactly once per model call, not per tool result).
 class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
     """Injects image details as a human message before LLM calls when view_image tools have completed.
 
@@ -60,6 +66,8 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
 
         return any(tool_call.get("name") == "view_image" for tool_call in message.tool_calls)
 
+    # [DL-NOTE] Waits for ALL tool calls in the turn to complete, not just view_image ones.
+    # Prevents injecting image data mid-turn before the model has seen all its other tool results.
     def _all_tools_completed(self, messages: list, assistant_msg: AIMessage) -> bool:
         """Check if all tool calls in the assistant message have been completed.
 
@@ -91,6 +99,8 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
         # Check if all tool calls have been completed
         return tool_call_ids.issubset(completed_tool_ids)
 
+    # [DL-NOTE] Injects ALL viewed_images accumulated across the full conversation, not just the new ones.
+    # The merge_viewed_images reducer (ThreadState) grows the dict; the model sees the full set every time.
     def _create_image_details_message(self, state: ViewImageMiddlewareState) -> list[str | dict]:
         """Create a formatted message with all viewed image details.
 
@@ -152,8 +162,9 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
         if not self._all_tools_completed(messages, last_assistant_msg):
             return False
 
-        # Check if we've already added an image details message
-        # Look for a human message after the last assistant message that contains image details
+        # [DL-WARN] Deduplication uses str(msg.content) substring search, not a structured marker.
+        # Works because content is a list of dicts when injected; str() serializes reliably enough,
+        # but any HumanMessage that happens to contain this exact phrase would also block injection.
         assistant_idx = messages.index(last_assistant_msg)
         for msg in messages[assistant_idx + 1 :]:
             if isinstance(msg, HumanMessage):

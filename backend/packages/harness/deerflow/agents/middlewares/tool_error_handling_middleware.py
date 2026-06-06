@@ -25,6 +25,7 @@ class ToolErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         tool_name = str(request.tool_call.get("name") or "unknown_tool")
         tool_call_id = str(request.tool_call.get("id") or _MISSING_TOOL_CALL_ID)
         detail = str(exc).strip() or exc.__class__.__name__
+        # [DL-NOTE] Truncate at 500 chars — prevents oversized ToolMessages from eating token budget.
         if len(detail) > 500:
             detail = detail[:497] + "..."
 
@@ -36,6 +37,9 @@ class ToolErrorHandlingMiddleware(AgentMiddleware[AgentState]):
             status="error",
         )
 
+    # [DL-INSIGHT] Innermost wrap_tool_call guard in Stage 1. wrap_* hooks nest first→outermost,
+    # last→innermost; being last means this sits directly around the actual tool handler and catches
+    # tool-level exceptions only — GuardrailMiddleware and SandboxAudit (earlier in list) are outer.
     @override
     def wrap_tool_call(
         self,
@@ -45,7 +49,7 @@ class ToolErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         try:
             return handler(request)
         except GraphBubbleUp:
-            # Preserve LangGraph control-flow signals (interrupt/pause/resume).
+            # [DL-WARN] GraphBubbleUp is LangGraph's control-flow signal — must not be caught here.
             raise
         except Exception as exc:
             logger.exception("Tool execution failed (sync): name=%s id=%s", request.tool_call.get("name"), request.tool_call.get("id"))
@@ -79,6 +83,9 @@ def _build_runtime_middlewares(
     from deerflow.agents.middlewares.thread_data_middleware import ThreadDataMiddleware
     from deerflow.sandbox.middleware import SandboxMiddleware
 
+    # [DL-NOTE] Initial order: [ThreadData(0), Sandbox(1)]. UploadsMiddleware inserts at index 1,
+    # making the final order [ThreadData, Uploads, Sandbox] — uploads must run after thread dirs
+    # exist (ThreadData creates them) but before the sandbox acquires (Sandbox reads uploaded paths).
     middlewares: list[AgentMiddleware] = [
         ThreadDataMiddleware(lazy_init=lazy_init),
         SandboxMiddleware(lazy_init=lazy_init),
@@ -106,9 +113,10 @@ def _build_runtime_middlewares(
 
         provider_cls = resolve_variable(guardrails_config.provider.use)
         provider_kwargs = dict(guardrails_config.provider.config) if guardrails_config.provider.config else {}
-        # Pass framework hint if the provider accepts it (e.g. for config discovery).
-        # Built-in providers like AllowlistProvider don't need it, so only inject
-        # when the constructor accepts 'framework' or '**kwargs'.
+        # [DL-INSIGHT] Cooperative framework injection: inspect the provider's __init__ signature
+        # before injecting framework="deerflow". OAP providers use it to locate their config dir
+        # (~/.aport/deerflow/). AllowlistProvider has no **kwargs so injection is skipped — avoids
+        # TypeError on simple providers that don't accept unknown kwargs.
         if "framework" not in provider_kwargs:
             try:
                 sig = inspect.signature(provider_cls.__init__)
@@ -148,6 +156,9 @@ def build_subagent_runtime_middlewares(
 
         app_config = get_app_config()
 
+    # [DL-NOTE] Subagents omit UploadsMiddleware (no direct file uploads) but share everything
+    # else: ThreadData, Sandbox, DanglingToolCall, LLMErrorHandling, Guardrail, SandboxAudit,
+    # ToolErrorHandling. Guardrail applies equally to subagent tool calls.
     middlewares = _build_runtime_middlewares(
         app_config=app_config,
         include_uploads=False,
@@ -159,6 +170,8 @@ def build_subagent_runtime_middlewares(
         model_name = app_config.models[0].name
 
     model_config = app_config.get_model_config(model_name) if model_name else None
+    # [DL-NOTE] Subagents get ViewImageMiddleware only if their assigned model supports vision —
+    # subagents can process images independently of the lead agent's vision capability.
     if model_config is not None and model_config.supports_vision:
         from deerflow.agents.middlewares.view_image_middleware import ViewImageMiddleware
 

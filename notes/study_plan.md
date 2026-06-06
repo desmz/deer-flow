@@ -284,14 +284,14 @@ Phase 7 — Run Orchestration (the top of the call stack):
 
 **Key files:**
 
-| Path                                                              | Status | Notes                                                                              |
-| ----------------------------------------------------------------- | ------ | ---------------------------------------------------------------------------------- |
-| `backend/packages/harness/deerflow/agents/thread_state.py`        | `[x]`  | Full state schema flowing through the LangGraph graph                              |
-| `backend/packages/harness/deerflow/agents/features.py`            | `[x]`  | Feature flags controlling agent behaviour                                          |
-| `backend/packages/harness/deerflow/agents/lead_agent/prompt.py`   | `[x]`  | System prompt assembly; primed eagerly at import time                              |
-| `backend/packages/harness/deerflow/agents/lead_agent/agent.py`    | `[x]`  | LangGraph node: calls model, handles tool calls, returns state updates             |
-| `backend/packages/harness/deerflow/agents/factory.py`             | `[x]`  | Wires the full LangGraph graph: nodes, edges, middleware wrapping                  |
-| `backend/packages/harness/deerflow/agents/__init__.py`            | `[x]`  | Package bootstrap: public API exports + eager skills cache priming on LangGraph import |
+| Path                                                            | Status | Notes                                                                                  |
+| --------------------------------------------------------------- | ------ | -------------------------------------------------------------------------------------- |
+| `backend/packages/harness/deerflow/agents/thread_state.py`      | `[x]`  | Full state schema flowing through the LangGraph graph                                  |
+| `backend/packages/harness/deerflow/agents/features.py`          | `[x]`  | Feature flags controlling agent behaviour                                              |
+| `backend/packages/harness/deerflow/agents/lead_agent/prompt.py` | `[x]`  | System prompt assembly; primed eagerly at import time                                  |
+| `backend/packages/harness/deerflow/agents/lead_agent/agent.py`  | `[x]`  | LangGraph node: calls model, handles tool calls, returns state updates                 |
+| `backend/packages/harness/deerflow/agents/factory.py`           | `[x]`  | Wires the full LangGraph graph: nodes, edges, middleware wrapping                      |
+| `backend/packages/harness/deerflow/agents/__init__.py`          | `[x]`  | Package bootstrap: public API exports + eager skills cache priming on LangGraph import |
 
 **Study order:**
 
@@ -317,32 +317,76 @@ Phase 3 — Graph assembly:
 **Goal:** Understand every transformation layer the agent goes through.
 
 - Middleware architecture: how middlewares wrap the agent
-- Complete list of middlewares in `agents/middlewares/`:
-  - Clarification middleware
-  - Dangling tool call middleware
-  - Dynamic context middleware
-  - Guardrail middleware
-  - LLM error handling middleware
-  - Loop detection middleware
-  - Memory middleware
-  - Subagent limit middleware
-  - Summarization middleware
-  - Thread data middleware
-  - Title middleware
-  - Todo middleware
-  - Token usage middleware
-  - Tool error handling middleware
-  - Tool output truncation middleware
-  - Uploads middleware
-  - View image middleware
-- Ordering and composition of the middleware chain
+- Two-stage assembly: Stage 1 (`_build_runtime_middlewares()` in `tool_error_handling_middleware.py`) builds positions 1–8; Stage 2 (`_build_middlewares()` in `lead_agent/agent.py`) appends positions 9–18
+- Complete list of middlewares (18 when Guardrail is disabled; 19 when enabled):
+  - Sandbox infrastructure: ThreadData, Uploads, SandboxMiddleware
+  - Model call wrappers: DanglingToolCall, LLMErrorHandling
+  - Tool execution guards: GuardrailMiddleware (lives in `guardrails/`, not `agents/middlewares/`), SandboxAudit, ToolErrorHandling, DeferredToolFilter
+  - Before-agent context: DynamicContext
+  - Before-model injection: Summarization, ViewImage
+  - After-model processing (fires in reverse): LoopDetection, SubagentLimit, Title, TokenUsage, Todo
+  - After-agent teardown: Memory (SandboxMiddleware also has after_agent release)
+- `ClarificationMiddleware` is pinned last (pos 18) and uses `wrap_tool_call` — it intercepts `ask_clarification` as the innermost tool wrapper, returning `Command(goto=END)` without calling `handler(request)`
 
 **Key files:**
 
-| Path                                                    | Status | Notes                                                                             |
-| ------------------------------------------------------- | ------ | --------------------------------------------------------------------------------- |
-| `backend/packages/harness/deerflow/agents/middlewares/` | `[ ]`  | All 17 middleware implementations wrapping the lead agent                         |
-| `backend/tests/test_*_middleware.py`                    | `[ ]`  | Unit tests illustrating each middleware's behaviour and edge cases (glob pattern) |
+| Path                                                                                     | Status | Notes                                                                                     |
+| ---------------------------------------------------------------------------------------- | ------ | ----------------------------------------------------------------------------------------- |
+| `backend/packages/harness/deerflow/agents/middlewares/`                                  | `[x]`  | all phases annotated: phases 2–6 (thread_data, uploads, dynamic_context; dangling_tool_call, llm_error_handling; sandbox_audit, deferred_tool_filter, clarification; summarization, view_image; loop_detection, subagent_limit, title, token_usage, todo) + phase 7 (memory_middleware) |
+| `backend/packages/harness/deerflow/agents/middlewares/tool_error_handling_middleware.py` | `[x]`  | Stage 1 assembly + ToolErrorHandlingMiddleware class (pos 8) annotated                    |
+| `backend/packages/harness/deerflow/guardrails/`                                          | `[x]`  | GuardrailMiddleware, provider.py, builtin.py all annotated                                |
+| `backend/packages/harness/deerflow/sandbox/middleware.py`                                | `[x]`  | SandboxMiddleware — pos 3; has both `before_agent` (acquire) and `after_agent` (release)  |
+| `backend/packages/harness/deerflow/config/loop_detection_config.py`                      | `[x]`  | Config for LoopDetectionMiddleware                                                        |
+| `backend/packages/harness/deerflow/config/summarization_config.py`                       | `[x]`  | Config for SummarizationMiddleware                                                        |
+| `backend/packages/harness/deerflow/config/title_config.py`                               | `[x]`  | Config for TitleMiddleware                                                                |
+| `backend/packages/harness/deerflow/config/token_usage_config.py`                         | `[x]`  | Config for TokenUsageMiddleware                                                           |
+
+**Study order:**
+
+Phase 1 — Assembly (understand chain wiring before reading individual middlewares):
+
+1. `agents/middlewares/tool_error_handling_middleware.py` — focus on `_build_runtime_middlewares()` and `build_lead_runtime_middlewares()`; Stage 1 builds positions 1–8
+2. `agents/lead_agent/agent.py` — focus on `_build_middlewares()`; Stage 2 appends positions 9–18 (already annotated in §08, re-read this function specifically)
+3. `agents/middlewares/__init__.py` — public exports; confirms the complete set
+
+Phase 2 — Before-agent (outer lifecycle, runs once at invocation start, forward order 1→9):
+
+1. `thread_data_middleware.py` [pos 1] — creates per-thread user directories
+2. `uploads_middleware.py` [pos 2] — injects uploaded files into state
+3. `sandbox/middleware.py` [pos 3] — acquires sandbox; also releases in `after_agent`
+4. `dynamic_context_middleware.py` [pos 9] — injects current date + memory as system reminder
+
+Phase 3 — Model call wrappers (wrap_model_call, surrounds each LLM invocation):
+
+1. `dangling_tool_call_middleware.py` [pos 4] — patches tool_call/ToolMessage gaps
+2. `llm_error_handling_middleware.py` [pos 5] — retries transient LLM API errors
+
+Phase 4 — Tool execution guards (wrap_tool_call, surrounds each tool invocation):
+
+1. `guardrails/provider.py` → `guardrails/builtin.py` → `guardrails/middleware.py` [pos 6, optional]
+2. `sandbox_audit_middleware.py` [pos 7] — security logging for shell/file ops
+3. `tool_error_handling_middleware.py` class [pos 8] — revisit the middleware class itself after Phase 1 covered the assembly functions
+4. `deferred_tool_filter_middleware.py` [pos 16] — also has `before_model`; read here since tool guard concern dominates
+5. `clarification_middleware.py` [pos Last] — innermost `wrap_tool_call`; intercepts `ask_clarification`, returns `Command(goto=END)` without executing the tool
+
+Phase 5 — Before-model (per-turn injection, runs every LLM call, forward order):
+
+1. `summarization_middleware.py` + `config/summarization_config.py` [pos 10]
+2. `view_image_middleware.py` [pos 15] — injects base64 images before model call
+
+Phase 6 — After-model (post-response processing; fires in reverse chain order, read high→low):
+
+1. `loop_detection_middleware.py` + `config/loop_detection_config.py` [pos 17] — fires 1st; hard-stop on detected loops
+2. `subagent_limit_middleware.py` [pos 16] — fires 2nd; truncates excess task tool calls
+3. `title_middleware.py` + `config/title_config.py` [pos 13] — fires 5th; auto-generates thread title
+4. `token_usage_middleware.py` + `config/token_usage_config.py` [pos 12] — fires 6th; records usage metrics
+5. `todo_middleware.py` [pos 11] — fires 7th; also has before_model + after_agent hooks
+
+Phase 6 notes file: `notes/modules/09f-after-model-middlewares.md`
+
+Phase 7 — After-agent teardown (runs once after the full agent run completes):
+
+1. `memory_middleware.py` [pos 14] — queues conversation for async memory update (SandboxMiddleware's after_agent covered in Phase 2)
 
 ---
 
@@ -361,10 +405,28 @@ Phase 3 — Graph assembly:
 
 **Key files:**
 
-| Path                                               | Status | Notes                                             |
-| -------------------------------------------------- | ------ | ------------------------------------------------- |
-| `backend/packages/harness/deerflow/agents/memory/` | `[ ]`  | Memory subsystem: updater, queue, prompt, storage |
-| `backend/tests/test_memory_*.py`                   | `[ ]`  | Memory unit and integration tests (glob pattern)  |
+| Path                                                                          | Status | Notes                                                          |
+| ----------------------------------------------------------------------------- | ------ | -------------------------------------------------------------- |
+| `backend/packages/harness/deerflow/agents/memory/prompt.py`                  | `[x]`  | Extraction prompt; defines the LLM contract for fact mining    |
+| `backend/packages/harness/deerflow/agents/memory/storage.py`                 | `[x]`  | Per-user file isolation; data structure and persistence model  |
+| `backend/packages/harness/deerflow/agents/memory/message_processing.py`      | `[x]`  | Pre-processes conversation messages before extraction          |
+| `backend/packages/harness/deerflow/agents/memory/queue.py`                   | `[x]`  | Debounce strategy and thread-safety for the update write path  |
+| `backend/packages/harness/deerflow/agents/memory/updater.py`                 | `[x]`  | LLM-driven fact extraction; top-level coordinator             |
+| `backend/packages/harness/deerflow/agents/memory/summarization_hook.py`      | `[x]`  | Hooks memory updates into the summarization pipeline           |
+
+**Study order:**
+
+Phase 1 — Primitives (data shapes, storage, and message pre-processing):
+
+1. `agents/memory/prompt.py` — extraction prompt; read first so the LLM contract (what facts are extracted and how) is clear before reading any logic
+2. `agents/memory/storage.py` — per-user file isolation; defines the `workContext`/`personalContext`/`topOfMind` data shapes that everything else reads and writes
+3. `agents/memory/message_processing.py` — pre-processes raw conversation messages into a form the extractor can consume
+
+Phase 2 — Orchestration (the write path):
+
+4. `agents/memory/queue.py` — debounce strategy and thread-safety; gates how and when updates are triggered
+5. `agents/memory/updater.py` — LLM-driven extraction; top-level coordinator that ties prompt, storage, and queue together
+6. `agents/memory/summarization_hook.py` — hooks memory updates into the summarization middleware lifecycle; read last as the integration point with the wider agent pipeline
 
 ---
 
@@ -859,10 +921,10 @@ Phase 3 — Graph assembly:
 | 04      | Infrastructure & DevOps          | [~]    | `architecture/04-infrastructure-devops.md`                                                                                                                                                                                |
 | 05      | Backend: Gateway API             | [x]    | `modules/05a-gateway-api.md`, `modules/05b-api-endpoints-overview.md`, `modules/05-api-reference/`                                                                                                                        |
 | 06      | Backend: Auth & Authorization    | [x]    | `modules/06a-auth-internals.md`, `modules/06b-auth-enforcement.md`                                                                                                                                                        |
-| 07      | Backend: LangGraph Runtime       | [x]    | `modules/07a-runtime-primitives.md`, `modules/07b-checkpointer-store.md`, `modules/07c-runtime-events.md`, `modules/07d-run-storage.md`, `modules/07e-stream-bridge.md`, `modules/07f-run-orchestration.md` |
+| 07      | Backend: LangGraph Runtime       | [x]    | `modules/07a-runtime-primitives.md`, `modules/07b-checkpointer-store.md`, `modules/07c-runtime-events.md`, `modules/07d-run-storage.md`, `modules/07e-stream-bridge.md`, `modules/07f-run-orchestration.md`               |
 | 08      | Backend: Lead Agent              | [x]    | `modules/08a-lead-agent.md`, `modules/08b-skills-cache-pipeline.md`                                                                                                                                                       |
-| 09      | Backend: Middleware Pipeline     | [ ]    |                                                                                                                                                                                                                           |
-| 10      | Backend: Memory System           | [ ]    |                                                                                                                                                                                                                           |
+| 09      | Backend: Middleware Pipeline     | [x]    | `modules/09a-middleware-pipeline-overview.md` (assembly), `modules/09b-before-agent-middlewares.md` (phase 2), `modules/09c-model-call-wrappers.md` (phase 3), `modules/09d-tool-call-wrappers.md` (phase 4), `modules/09e-before-model-middlewares.md` (phase 5), `modules/09f-after-model-middlewares.md` (phase 6), `modules/09g-after-agent-middlewares.md` (phase 7) |
+| 10      | Backend: Memory System           | [x]    | `modules/10-memory-system.md`                                                                                                                                                                                             |
 | 11      | Backend: Subagents               | [ ]    |                                                                                                                                                                                                                           |
 | 12      | Backend: Tools System            | [ ]    |                                                                                                                                                                                                                           |
 | 13      | Backend: Skills System           | [ ]    |                                                                                                                                                                                                                           |

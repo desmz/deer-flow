@@ -170,6 +170,8 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
             if not isinstance(f, dict):
                 continue
             filename = f.get("filename") or ""
+            # [DL-INSIGHT] Path traversal guard: rejects filenames containing directory separators
+            # (e.g. "../../etc/passwd"). Only bare filenames like "report.pdf" are allowed.
             if not filename or Path(filename).name != filename:
                 continue
             if uploads_dir is not None and not (uploads_dir / filename).is_file():
@@ -178,6 +180,8 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
                 {
                     "filename": filename,
                     "size": int(f.get("size") or 0),
+                    # [DL-INSIGHT] Always overrides the frontend-provided path with the canonical virtual path.
+                    # The frontend may send any path; this enforces the sandbox's /mnt/ namespace.
                     "path": f"/mnt/user-data/uploads/{filename}",
                     "extension": Path(filename).suffix,
                 }
@@ -221,13 +225,16 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
 
                 thread_id = get_config().get("configurable", {}).get("thread_id")
             except RuntimeError:
+                # [DL-NOTE] get_config() raises RuntimeError outside a LangGraph runnable context
+                # (e.g. tests calling before_agent directly). Swallowing keeps thread_id=None.
                 pass  # get_config() raises outside a runnable context (e.g. unit tests)
         uploads_dir = self._paths.sandbox_uploads_dir(thread_id, user_id=get_effective_user_id()) if thread_id else None
 
         # Get newly uploaded files from the current message's additional_kwargs.files
         new_files = self._files_from_kwargs(last_message, uploads_dir) or []
 
-        # Collect historical files from the uploads directory (all except the new ones)
+        # [DL-INSIGHT] Two-pass strategy: "new" files come from this message's metadata;
+        # "historical" files are scanned from the filesystem, giving the model a complete picture.
         new_filenames = {f["filename"] for f in new_files}
         historical_files: list[dict] = []
         if uploads_dir and uploads_dir.exists():
@@ -278,8 +285,8 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
             updated_content = original_content
 
         # Create new message with combined content.
-        # Preserve additional_kwargs (including files metadata) so the frontend
-        # can read structured file info from the streamed message.
+        # [DL-WARN] additional_kwargs is preserved verbatim (including original files metadata).
+        # The frontend reads file info from the streamed message, so stripping it would break the UI.
         updated_message = HumanMessage(
             content=updated_content,
             id=last_message.id,

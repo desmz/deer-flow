@@ -15,6 +15,9 @@ def _raw_tool_call_id(raw_tool_call: Any) -> str | None:
     return raw_id if isinstance(raw_id, str) and raw_id else None
 
 
+# [DL-INSIGHT] Shared by SubagentLimitMiddleware and any future middleware that mutates tool_calls.
+# Solves the "three representations" problem: structured tool_calls, additional_kwargs["tool_calls"]
+# (raw provider JSON), and additional_kwargs["function_call"] (legacy OpenAI) must all stay in sync.
 def clone_ai_message_with_tool_calls(
     message: AIMessage,
     tool_calls: list[dict[str, Any]],

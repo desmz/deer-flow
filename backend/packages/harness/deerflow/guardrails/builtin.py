@@ -9,10 +9,14 @@ class AllowlistProvider:
     name = "allowlist"
 
     def __init__(self, *, allowed_tools: list[str] | None = None, denied_tools: list[str] | None = None):
+        # [DL-NOTE] None vs empty set asymmetry: None means "no allowlist restriction";
+        # empty set(denied) means "deny nothing". Explicit None is the permissive default.
         self._allowed = set(allowed_tools) if allowed_tools else None
         self._denied = set(denied_tools) if denied_tools else set()
 
     def evaluate(self, request: GuardrailRequest) -> GuardrailDecision:
+        # [DL-INSIGHT] Evaluation order matters: allowlist check runs first, denylist second.
+        # A tool in both lists is denied — denylist always wins over allowlist.
         if self._allowed is not None and request.tool_name not in self._allowed:
             return GuardrailDecision(allow=False, reasons=[GuardrailReason(code="oap.tool_not_allowed", message=f"tool '{request.tool_name}' not in allowlist")])
         if request.tool_name in self._denied:
@@ -20,4 +24,5 @@ class AllowlistProvider:
         return GuardrailDecision(allow=True, reasons=[GuardrailReason(code="oap.allowed")])
 
     async def aevaluate(self, request: GuardrailRequest) -> GuardrailDecision:
+        # [DL-NOTE] Pure in-memory logic; no I/O, so async simply delegates to sync.
         return self.evaluate(request)

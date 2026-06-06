@@ -3,6 +3,8 @@
 from pydantic import BaseModel, Field, model_validator
 
 
+# [DL-NOTE] Per-tool override validated independently — each override must also satisfy hard_limit >= warn.
+# This mirrors the same invariant enforced at the top-level LoopDetectionConfig.
 class ToolFreqOverride(BaseModel):
     """Per-tool frequency threshold override.
 
@@ -58,11 +60,15 @@ class LoopDetectionConfig(BaseModel):
         ge=1,
         description="Number of calls to the same tool type before forcing a stop",
     )
+    # [DL-INSIGHT] Per-tool overrides let operators raise limits for high-frequency tools (e.g. bash in
+    # pipelines) without globally weakening loop detection across all other tools.
     tool_freq_overrides: dict[str, ToolFreqOverride] = Field(
         default_factory=dict,
         description=("Per-tool overrides for tool_freq_warn / tool_freq_hard_limit, keyed by tool name. Values can be higher or lower than the global defaults. Commonly used to raise thresholds for high-frequency tools like bash."),
     )
 
+    # [DL-NOTE] Both invariants enforced together: hash-based and frequency-based hard limits must each
+    # be >= their respective warn thresholds, preventing a hard stop from firing before any warning.
     @model_validator(mode="after")
     def validate_thresholds(self) -> "LoopDetectionConfig":
         """Ensure hard stop cannot happen before the warning threshold."""

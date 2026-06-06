@@ -32,7 +32,8 @@ class TitleConfig(BaseModel):
     )
 
 
-# Global configuration instance
+# [DL-NOTE] Module-level singleton is a fallback for callers that don't have an AppConfig (e.g. tests,
+# standalone scripts). Production always passes app_config to TitleMiddleware, bypassing this singleton.
 _title_config: TitleConfig = TitleConfig()
 
 

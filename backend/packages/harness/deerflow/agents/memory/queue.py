@@ -12,6 +12,9 @@ from deerflow.config.memory_config import get_memory_config
 logger = logging.getLogger(__name__)
 
 
+# [DL-INSIGHT] user_id is captured eagerly on the LangGraph async thread and stored here
+# so it survives the threading.Timer boundary — ContextVar values do NOT propagate to
+# raw threads, so reading get_effective_user_id() inside _process_queue would return None.
 @dataclass
 class ConversationContext:
     """Context for a conversation to be processed for memory update."""
@@ -49,6 +52,8 @@ class MemoryUpdateQueue:
         """Return the debounce identity for a memory update target."""
         return (thread_id, user_id, agent_name)
 
+    # [DL-NOTE] add() restarts the debounce timer on every call — classic debounce:
+    # rapid successive updates for the same thread collapse into one LLM call.
     def add(
         self,
         thread_id: str,
@@ -87,6 +92,9 @@ class MemoryUpdateQueue:
 
         logger.info("Memory update queued for thread %s, queue size: %d", thread_id, len(self._queue))
 
+    # [DL-INSIGHT] add_nowait() bypasses the debounce window (delay=0) — used by
+    # summarization_hook when memory must be updated in-band with summarization,
+    # not 30s later. add() and add_nowait() are distinct entry points, not aliases.
     def add_nowait(
         self,
         thread_id: str,
@@ -129,6 +137,9 @@ class MemoryUpdateQueue:
             (context for context in self._queue if self._queue_key(context.thread_id, context.user_id, context.agent_name) == queue_key),
             None,
         )
+        # [DL-INSIGHT] Messages use last-write-wins (latest snapshot replaces old one),
+        # but signal flags use OR — a correction detected in an earlier batch is not
+        # lost when a follow-up add() replaces the entry before the timer fires.
         merged_correction_detected = correction_detected or (existing_context.correction_detected if existing_context is not None else False)
         merged_reinforcement_detected = reinforcement_detected or (existing_context.reinforcement_detected if existing_context is not None else False)
         context = ConversationContext(
@@ -156,6 +167,8 @@ class MemoryUpdateQueue:
         if self._timer is not None:
             self._timer.cancel()
 
+        # [DL-WARN] Daemon timer: if the process exits before the timer fires, queued
+        # memory updates are silently lost. This is intentional (best-effort semantics).
         self._timer = threading.Timer(
             delay_seconds,
             self._process_queue,
@@ -165,10 +178,15 @@ class MemoryUpdateQueue:
 
     def _process_queue(self) -> None:
         """Process all queued conversation contexts."""
-        # Import here to avoid circular dependency
+        # [DL-NOTE] Deferred import breaks the potential import cycle: queue.py is imported
+        # at module load time by memory_middleware; importing updater here instead of at top
+        # level ensures updater.py is fully initialized before this path runs.
         from deerflow.agents.memory.updater import MemoryUpdater
 
         with self._lock:
+            # [DL-NOTE] _processing guard prevents two Timer threads from running concurrently.
+            # If already busy, reschedule at delay=0 to retry immediately after the current
+            # worker finishes — preserves add_nowait() "immediate flush" semantics.
             if self._processing:
                 # Preserve immediate flush semantics even if another worker is active.
                 self._schedule_timer(0)

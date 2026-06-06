@@ -4,6 +4,7 @@ import math
 import re
 from typing import Any
 
+# [DL-NOTE] tiktoken is optional; if absent, a char/4 heuristic is used as fallback.
 try:
     import tiktoken
 
@@ -11,7 +12,8 @@ try:
 except ImportError:
     TIKTOKEN_AVAILABLE = False
 
-# Prompt template for updating memory based on conversation
+# [DL-INSIGHT] Two prompts exist: MEMORY_UPDATE_PROMPT (full profile update, used by updater.py)
+# and FACT_EXTRACTION_PROMPT (single-message extraction, exported but currently unused in runtime).
 MEMORY_UPDATE_PROMPT = """You are a memory management system. Your task is to analyze a conversation and update the user's memory profile.
 
 Current Memory State:
@@ -38,6 +40,8 @@ Before extracting facts, perform a structured reflection on the conversation:
 3. Project Constraint Discovery: Were any project-specific constraints discovered during the conversation?
    If yes, record them as facts with the most appropriate category and confidence.
 
+# [DL-NOTE] {correction_hint} is filled by updater._build_correction_hint() — dynamically reinforces
+# past corrections so the LLM re-extracts them on each update pass.
 {correction_hint}
 
 Memory Section Guidelines:
@@ -124,6 +128,8 @@ Important Rules:
 - For history sections, integrate new information chronologically into appropriate time period
 - Preserve technical accuracy - keep exact names of technologies, companies, projects
 - Focus on information useful for future interactions and personalization
+# [DL-INSIGHT] Explicit LLM instruction prevents ephemeral upload events from polluting long-term
+# memory — mirrors the tag-stripping done in format_conversation_for_update() at the code level.
 - IMPORTANT: Do NOT record file upload events in memory. Uploaded files are
   session-specific and ephemeral — they will not be accessible in future sessions.
   Recording upload events causes confusion in subsequent conversations.
@@ -182,6 +188,8 @@ def _count_tokens(text: str, encoding_name: str = "cl100k_base") -> int:
         return len(text) // 4
 
 
+# [DL-INSIGHT] NaN/Inf are rejected before clamping: clamping inf → 1.0 would silently rank
+# a broken fact first; falling back to default instead makes the malformed value neutral.
 def _coerce_confidence(value: Any, default: float = 0.0) -> float:
     """Coerce a confidence-like value to a bounded float in [0, 1].
 
@@ -256,12 +264,16 @@ def format_memory_for_injection(memory_data: dict[str, Any], max_tokens: int = 2
     # Format facts (sorted by confidence; include as many as token budget allows)
     facts_data = memory_data.get("facts", [])
     if isinstance(facts_data, list) and facts_data:
+        # [DL-INSIGHT] Sort by confidence descending before the budget loop so the highest-quality
+        # facts always win when token space runs out — no secondary re-ranking needed.
         ranked_facts = sorted(
             (f for f in facts_data if isinstance(f, dict) and isinstance(f.get("content"), str) and f.get("content").strip()),
             key=lambda fact: _coerce_confidence(fact.get("confidence"), default=0.0),
             reverse=True,
         )
 
+        # [DL-NOTE] Incremental token accounting: base + separator computed once; each fact line
+        # is counted individually to avoid full-string re-tokenization on every iteration.
         # Compute token count for existing sections once, then account
         # incrementally for each fact line to avoid full-string re-tokenization.
         base_text = "\n\n".join(sections)
@@ -282,6 +294,8 @@ def format_memory_for_injection(memory_data: dict[str, Any], max_tokens: int = 2
             category = str(fact.get("category", "context")).strip() or "context"
             confidence = _coerce_confidence(fact.get("confidence"), default=0.0)
             source_error = fact.get("sourceError")
+            # [DL-NOTE] "correction" category gets an (avoid: ...) suffix when sourceError is
+            # present, so the LLM sees both the correct approach and what went wrong last time.
             if category == "correction" and isinstance(source_error, str) and source_error.strip():
                 line = f"- [{category} | {confidence:.2f}] {content} (avoid: {source_error.strip()})"
             else:
@@ -307,6 +321,8 @@ def format_memory_for_injection(memory_data: dict[str, Any], max_tokens: int = 2
 
     # Use accurate token counting with tiktoken
     token_count = _count_tokens(result)
+    # [DL-WARN] This hard truncation is a last-resort fallback only; it can cut mid-sentence.
+    # It fires if the incremental accounting above underestimates due to tokenizer edge cases.
     if token_count > max_tokens:
         # Truncate to fit within token limit
         # Estimate characters to remove based on token ratio
@@ -343,6 +359,8 @@ def format_conversation_for_update(messages: list[Any]) -> str:
                         text_parts.append(text_val)
             content = " ".join(text_parts) if text_parts else str(content)
 
+        # [DL-INSIGHT] Code-level defense that mirrors the prompt-level rule: strip
+        # <uploaded_files> tags so ephemeral paths never reach the LLM extractor at all.
         # Strip uploaded_files tags from human messages to avoid persisting
         # ephemeral file path info into long-term memory.  Skip the turn entirely
         # when nothing remains after stripping (upload-only message).

@@ -50,6 +50,9 @@ class DanglingToolCallMiddleware(AgentMiddleware[AgentState]):
         tool_calls = getattr(msg, "tool_calls", None) or []
         normalized.extend(list(tool_calls))
 
+        # [DL-NOTE] additional_kwargs["tool_calls"] holds raw provider payloads not yet parsed
+        # by LangChain adapters (e.g., partial calls preserved on graph resume). Only scraped
+        # when tool_calls is empty to avoid double-counting the same call in two representations.
         raw_tool_calls = (getattr(msg, "additional_kwargs", None) or {}).get("tool_calls") or []
         if not tool_calls:
             for raw_tc in raw_tool_calls:
@@ -79,6 +82,8 @@ class DanglingToolCallMiddleware(AgentMiddleware[AgentState]):
                     }
                 )
 
+        # [DL-NOTE] invalid_tool_calls is always appended regardless of whether tool_calls is set;
+        # malformed calls coexist with valid ones and still need ToolMessage placeholders for providers.
         for invalid_tc in getattr(msg, "invalid_tool_calls", None) or []:
             if not isinstance(invalid_tc, dict):
                 continue
@@ -109,6 +114,10 @@ class DanglingToolCallMiddleware(AgentMiddleware[AgentState]):
         This normalizes model-bound causal order before provider serialization while
         preserving already-valid transcripts unchanged.
         """
+        # [DL-INSIGHT] Two pre-passes build lookup structures: an id→ToolMessage index and
+        # the full set of tool_call ids referenced by AIMessages. The third (patching) pass
+        # strips ToolMessages from their original positions and re-inserts them (or synthetic
+        # replacements) immediately after the AIMessage that issued them.
         tool_messages_by_id: dict[str, ToolMessage] = {}
         for msg in messages:
             if isinstance(msg, ToolMessage):
@@ -127,6 +136,9 @@ class DanglingToolCallMiddleware(AgentMiddleware[AgentState]):
         consumed_tool_msg_ids: set[str] = set()
         patch_count = 0
         for msg in messages:
+            # [DL-INSIGHT] ToolMessages that belong to a known AI tool call are dropped from
+            # their original position here; they're re-inserted immediately after their AIMessage
+            # below. Orphan ToolMessages (tool_call_id not in any AIMessage) pass through unchanged.
             if isinstance(msg, ToolMessage) and msg.tool_call_id in tool_call_ids:
                 continue
 
@@ -155,6 +167,8 @@ class DanglingToolCallMiddleware(AgentMiddleware[AgentState]):
                     consumed_tool_msg_ids.add(tc_id)
                     patch_count += 1
 
+        # [DL-NOTE] If list contents are equal the history was already in canonical form;
+        # return None so wrap_model_call forwards the original request object unmodified.
         if patched == messages:
             return None
 
@@ -162,6 +176,9 @@ class DanglingToolCallMiddleware(AgentMiddleware[AgentState]):
             logger.warning(f"Injecting {patch_count} placeholder ToolMessage(s) for dangling tool calls")
         return patched
 
+    # [DL-INSIGHT] wrap_model_call (not before_model) is used so patches are inserted
+    # immediately after each AIMessage. before_model's add_messages reducer would append
+    # synthetic ToolMessages to the tail of the list, breaking causal ordering.
     @override
     def wrap_model_call(
         self,
@@ -170,6 +187,8 @@ class DanglingToolCallMiddleware(AgentMiddleware[AgentState]):
     ) -> ModelCallResult:
         patched = self._build_patched_messages(request.messages)
         if patched is not None:
+            # [DL-NOTE] request.override() is an immutable-update: produces a new ModelRequest
+            # with all fields preserved except messages, so no mutation of the shared request.
             request = request.override(messages=patched)
         return handler(request)
 

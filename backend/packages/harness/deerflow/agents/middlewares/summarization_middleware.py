@@ -20,6 +20,8 @@ from deerflow.agents.middlewares.tool_call_metadata import clone_ai_message_with
 logger = logging.getLogger(__name__)
 
 
+# [DL-INSIGHT] Immutable snapshot of what's about to be compressed; passed to hooks so they can act
+# on messages *before* they're permanently removed from state (e.g., memory_flush_hook — see agents/memory/summarization_hook.py).
 @dataclass(frozen=True)
 class SummarizationEvent:
     """Context emitted before conversation history is summarized away."""
@@ -31,6 +33,8 @@ class SummarizationEvent:
     runtime: Runtime
 
 
+# [DL-NOTE] Primary integration point; memory_flush_hook (agents/memory/summarization_hook.py) plugs in here
+# to flush about-to-be-compressed messages into the memory queue before they are lost forever.
 @runtime_checkable
 class BeforeSummarizationHook(Protocol):
     """Hook invoked before summarization removes messages from state."""
@@ -95,6 +99,8 @@ class _SkillBundle:
     skill_key: str
 
 
+# [DL-INSIGHT] Extends LangChain's SummarizationMiddleware with three DeerFlow-specific features:
+# (1) BeforeSummarizationHook dispatch, (2) skill bundle rescue, (3) dynamic-context reminder preservation.
 class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
     """Summarization middleware with pre-compression hook dispatch and skill rescue."""
 
@@ -175,6 +181,8 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
             ]
         }
 
+    # [DL-INSIGHT] name="summary" is the signal the frontend uses to hide this message from the chat UI;
+    # without the override, the base class emits a plain HumanMessage with no name and it renders as a user turn.
     @override
     def _build_new_messages(self, summary: str) -> list[HumanMessage]:
         """Override the base implementation to let the human message with the special name 'summary'.
@@ -182,6 +190,8 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         """
         return [HumanMessage(content=f"Here is a summary of the conversation to date:\n\n{summary}", name="summary")]
 
+    # [DL-WARN] Without this rescue, DynamicContextMiddleware (pos 9) would see the summary HumanMessage
+    # as the "first" user turn and inject the date/memory reminder in the wrong position.
     def _preserve_dynamic_context_reminders(
         self,
         messages_to_summarize: list[AnyMessage],
@@ -200,6 +210,8 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         remaining = [msg for msg in messages_to_summarize if not is_dynamic_context_reminder(msg)]
         return remaining, reminders + preserved_messages
 
+    # [DL-INSIGHT] Parent's _partition_messages simply slices at cutoff. This wraps it to rescue
+    # skill-read AIMessage+ToolMessage pairs before the cut — prevents the model from losing active skill awareness.
     def _partition_with_skill_rescue(
         self,
         messages: list[AnyMessage],
@@ -310,6 +322,8 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
 
         return bundles
 
+    # [DL-NOTE] Walks newest-first (reversed); deduplicates by skill_key so reloading the same skill
+    # doesn't count against the budget twice. Order is then restored with selected.reverse().
     def _select_bundles_to_rescue(self, bundles: list[_SkillBundle]) -> list[_SkillBundle]:
         """Pick bundles to keep, walking newest-first under count/token budgets."""
         selected: list[_SkillBundle] = []
@@ -338,6 +352,8 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         selected.reverse()
         return selected
 
+    # [DL-NOTE] Path-prefix check: /mnt/skills is the container path injected by skills_container_path;
+    # non-skill reads (e.g. /mnt/user-data/workspace/notes.md) are correctly excluded.
     def _is_skill_tool_call(self, tool_call: dict[str, Any], skills_root: str) -> bool:
         """Return True when ``tool_call`` reads a file under the configured skills root."""
         name = tool_call.get("name") or ""
@@ -349,6 +365,8 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         normalized_root = skills_root.rstrip("/")
         return path == normalized_root or path.startswith(normalized_root + "/")
 
+    # [DL-INSIGHT] Each hook is isolated; one hook failing (e.g. a broken memory_flush_hook) logs the
+    # error but never blocks summarization from completing — resilience over correctness here.
     def _fire_hooks(
         self,
         messages_to_summarize: list[AnyMessage],

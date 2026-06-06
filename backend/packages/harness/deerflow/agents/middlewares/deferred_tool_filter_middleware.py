@@ -31,9 +31,16 @@ class DeferredToolFilterMiddleware(AgentMiddleware[AgentState]):
     via tool_search at runtime.
     """
 
+    # [DL-INSIGHT] This middleware implements BOTH wrap_model_call AND wrap_tool_call.
+    # wrap_model_call hides deferred schemas from bind_tools before each LLM call.
+    # wrap_tool_call blocks direct invocation of still-deferred tools (safety net for hallucination).
+    # Once tool_search promotes a tool (removes it from the registry), both hooks stop acting on it.
+
     def _filter_tools(self, request: ModelRequest) -> ModelRequest:
         from deerflow.tools.builtins.tool_search import get_deferred_registry
 
+        # [DL-NOTE] Registry is a ContextVar — each async graph run has its own isolated instance.
+        # See: deerflow/tools/builtins/tool_search.py — _registry_var ContextVar.
         registry = get_deferred_registry()
         if not registry:
             return request
@@ -57,6 +64,8 @@ class DeferredToolFilterMiddleware(AgentMiddleware[AgentState]):
         if not tool_name:
             return None
 
+        # [DL-WARN] LLM may hallucinate a call to a deferred tool it saw listed in the system
+        # prompt before calling tool_search. This guard returns an actionable error in that case.
         if not registry.contains(tool_name):
             return None
 

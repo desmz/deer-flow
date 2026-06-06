@@ -18,6 +18,8 @@ class SandboxMiddlewareState(AgentState):
     thread_data: NotRequired[ThreadDataState | None]
 
 
+# [DL-NOTE] Only Stage 1 middleware with BOTH before_agent (acquire) and after_agent (release).
+# The two-hook design separates sandbox lifetime management from the single-hook middlewares.
 class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
     """Create a sandbox environment and assign it to an agent.
 
@@ -43,6 +45,8 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
         self._lazy_init = lazy_init
 
     def _acquire_sandbox(self, thread_id: str) -> str:
+        # [DL-NOTE] get_sandbox_provider() is a lazy singleton resolved from config.sandbox.use
+        # via reflection. For LocalSandboxProvider, acquire() ignores thread_id and returns "local".
         provider = get_sandbox_provider()
         sandbox_id = provider.acquire(thread_id)
         logger.info(f"Acquiring sandbox {sandbox_id}")
@@ -50,7 +54,8 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
 
     @override
     def before_agent(self, state: SandboxMiddlewareState, runtime: Runtime) -> dict | None:
-        # Skip acquisition if lazy_init is enabled
+        # [DL-INSIGHT] With lazy_init=True, before_agent is a complete no-op (returns None via super).
+        # The sandbox is acquired on the first actual tool call, not at agent invocation start.
         if self._lazy_init:
             return super().before_agent(state, runtime)
 
@@ -70,9 +75,13 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
         if sandbox is not None:
             sandbox_id = sandbox["sandbox_id"]
             logger.info(f"Releasing sandbox {sandbox_id}")
+            # [DL-NOTE] For LocalSandboxProvider, release() is a deliberate no-op (singleton reuse).
+            # For Docker-based providers (AioSandbox), release() actually destroys the container.
             get_sandbox_provider().release(sandbox_id)
             return None
 
+        # [DL-INSIGHT] Fallback: sandbox_id in runtime.context signals a pre-allocated sandbox
+        # (e.g. provisioner/Kubernetes mode), bypassing the state-based acquisition path.
         if (runtime.context or {}).get("sandbox_id") is not None:
             sandbox_id = runtime.context.get("sandbox_id")
             logger.info(f"Releasing sandbox {sandbox_id} from context")

@@ -49,7 +49,7 @@ def ask_clarification_tool(
         context: Optional context explaining why clarification is needed. Helps the user understand the situation.
         options: Optional list of choices (for approach_choice or suggestion types). Present clear options for the user to choose from.
     """
-    # This is a placeholder implementation
-    # The actual logic is handled by ClarificationMiddleware which intercepts this tool call
-    # and interrupts execution to present the question to the user
+    # [DL-NOTE] This body is intentionally never executed. ClarificationMiddleware (innermost
+    # wrap_tool_call) intercepts ask_clarification before handler() is called and returns
+    # Command(goto=END) directly. See: agents/middlewares/clarification_middleware.py.
     return "Clarification request processed by middleware"

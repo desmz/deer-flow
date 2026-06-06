@@ -26,11 +26,12 @@ from deerflow.models import create_chat_model
 logger = logging.getLogger(__name__)
 
 
-# Thread pool for offloading sync memory updates when called from an async
-# context.  Unlike the previous asyncio.run() approach, this runs *sync*
-# model.invoke() calls — no event loop is created, so the langchain async
-# httpx client pool (globally cached via @lru_cache) is never touched and
-# cross-loop connection reuse is impossible.
+# [DL-INSIGHT] The entire memory update path uses model.invoke() (sync HTTP), never
+# model.ainvoke() (async). The langchain async httpx client shares a connection pool tied to
+# one event loop. Calling it from a different loop (timer thread, new asyncio.run())
+# triggers "Event loop is closed" errors (issue #2615). The thread pool here lets
+# callers inside a running loop offload the blocking sync call without spawning a
+# second event loop or touching the async client pool.
 _SYNC_MEMORY_UPDATER_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     max_workers=4,
     thread_name_prefix="memory-updater-sync",
@@ -190,6 +191,8 @@ def update_memory_fact(
     return updated_memory
 
 
+# [DL-NOTE] str() on a list returns Python repr ("['...']"), not the actual text —
+# this function exists specifically to prevent that from breaking JSON parsing.
 def _extract_text(content: Any) -> str:
     """Extract plain text from LLM response content (str or list of content blocks).
 
@@ -264,6 +267,8 @@ def _strip_upload_mentions_from_memory(memory_data: dict[str, Any]) -> dict[str,
     return memory_data
 
 
+# [DL-NOTE] casefold() for case-insensitive duplicate detection — "User uses Python" and
+# "user uses python" from two separate LLM runs are treated as the same fact.
 def _fact_content_key(content: Any) -> str | None:
     if not isinstance(content, str):
         return None
@@ -363,6 +368,8 @@ class MemoryUpdater:
         # Deep-copy before in-place mutation so a subsequent save() failure
         # cannot corrupt the still-cached original object reference.
         updated_memory = self._apply_updates(copy.deepcopy(current_memory), update_data, thread_id)
+        # [DL-INSIGHT] Third layer of upload-event defense (after prompt instruction and
+        # message pre-processing) — scrubs any upload sentences the LLM snuck through.
         updated_memory = _strip_upload_mentions_from_memory(updated_memory)
         return get_memory_storage().save(updated_memory, agent_name, user_id=user_id)
 
@@ -469,6 +476,9 @@ class MemoryUpdater:
         Returns:
             True if update was successful, False otherwise.
         """
+        # [DL-INSIGHT] Event-loop detection: if called from inside a running loop (e.g. a
+        # LangGraph node), offload to the thread pool to avoid blocking the loop.
+        # If no loop is running (e.g. plain threading.Timer thread), call sync directly.
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -518,6 +528,8 @@ class MemoryUpdater:
         config = get_memory_config()
         now = utc_now_iso_z()
 
+        # [DL-NOTE] shouldUpdate gate: the LLM must explicitly set shouldUpdate=true for a
+        # section to be written — prevents empty or unchanged sections from overwriting good data.
         # Update user sections
         user_updates = update_data.get("user", {})
         for section in ["workContext", "personalContext", "topOfMind"]:
@@ -543,7 +555,9 @@ class MemoryUpdater:
         if facts_to_remove:
             current_memory["facts"] = [f for f in current_memory.get("facts", []) if f.get("id") not in facts_to_remove]
 
-        # Add new facts
+        # [DL-INSIGHT] Facts are deduplicated by casefold key before append, then trimmed to
+        # max_facts by confidence. Low-confidence facts are both filtered at entry AND evicted
+        # last when over the cap — two independent quality gates.
         existing_fact_keys = {fact_key for fact_key in (_fact_content_key(fact.get("content")) for fact in current_memory.get("facts", [])) if fact_key is not None}
         new_facts = update_data.get("newFacts", [])
         for fact in new_facts:

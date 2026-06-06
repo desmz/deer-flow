@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # Command classification rules
 # ---------------------------------------------------------------------------
 
-# Each pattern is compiled once at import time.
+# [DL-NOTE] Patterns compiled once at import time (not per-call) — safe to use many patterns.
 _HIGH_RISK_PATTERNS: list[re.Pattern[str]] = [
     # --- original rules (retained) ---
     re.compile(r"rm\s+-[^\s]*r[^\s]*\s+(/\*?|~/?\*?|/home\b|/root\b)\s*$"),
@@ -61,6 +61,10 @@ _MEDIUM_RISK_PATTERNS: list[re.Pattern[str]] = [
 ]
 
 
+# [DL-INSIGHT] Quote-aware splitter: tracks single-quote, double-quote, and escape state so
+# operators inside quoted strings (e.g. 'a && b') are not treated as separators.
+# Fail-closed: unclosed quote / dangling escape → return whole command unsplit (safer to
+# over-classify a single long string than to miss a dangerous sub-command by mis-splitting).
 def _split_compound_command(command: str) -> list[str]:
     """Split a compound command into sub-commands (quote-aware).
 
@@ -142,7 +146,8 @@ def _classify_single_command(command: str) -> str:
         if pattern.search(normalized):
             return "block"
 
-    # Also try shlex-parsed tokens for high-risk detection
+    # [DL-WARN] shlex re-run catches evasion via unusual whitespace (tabs, multi-spaces).
+    # shlex.split() failure on unclosed quotes → block (fail-closed; malformed input is suspect).
     try:
         tokens = shlex.split(command)
         joined = " ".join(tokens)
@@ -160,6 +165,9 @@ def _classify_single_command(command: str) -> str:
     return "pass"
 
 
+# [DL-INSIGHT] Two-pass strategy: whole-command scan first, then per-sub-command scan.
+# Pass 1 is essential for fork bombs (:(){ :|:& };:) and while-loop bombs — splitting on ';'
+# first would destroy the multi-statement pattern context that the regex needs to match.
 def _classify_command(command: str) -> str:
     """Return 'block', 'warn', or 'pass'.
 
@@ -282,8 +290,11 @@ class SandboxAuditMiddleware(AgentMiddleware[ThreadState]):
         if not command.strip():
             return "empty command"
         if len(command) > self._MAX_COMMAND_LENGTH:
+            # [DL-NOTE] 10k chars blocks base64-encoded attack payloads; _AUDIT_COMMAND_LIMIT=200
+            # is the separate audit-log truncation limit — these two constants serve different roles.
             return "command too long"
         if "\x00" in command:
+            # [DL-NOTE] Null bytes can terminate strings in C contexts and confuse parsers.
             return "null byte detected"
         return None
 
@@ -332,6 +343,8 @@ class SandboxAuditMiddleware(AgentMiddleware[ThreadState]):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage | Command],
     ) -> ToolMessage | Command:
+        # [DL-INSIGHT] Only bash needs content-based analysis. Other sandbox tools (write_file,
+        # str_replace, read_file, ls) take explicit path/content args, not arbitrary shell commands.
         if request.tool_call.get("name") != "bash":
             return handler(request)
 
@@ -340,6 +353,8 @@ class SandboxAuditMiddleware(AgentMiddleware[ThreadState]):
             reason = reject_reason or "security violation detected"
             return self._build_block_message(request, reason)
         result = handler(request)
+        # [DL-INSIGHT] Medium-risk: execute the command but append a warning to the result.
+        # The LLM sees the warning in the tool response and can decide if the risk is acceptable.
         if verdict == "warn":
             result = self._append_warn_to_result(result, command)
         return result

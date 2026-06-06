@@ -43,6 +43,9 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
             return self._app_config.title
         return get_title_config()
 
+    # [DL-NOTE] Handles three content shapes: plain str, Anthropic-style block list
+    # ([{"type":"text","text":"..."}]), and nested dicts. Without this, list content would
+    # appear as raw Python repr in the title prompt.
     def _normalize_content(self, content: object) -> str:
         if isinstance(content, str):
             return content
@@ -62,6 +65,8 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
 
         return ""
 
+    # [DL-NOTE] DynamicContextMiddleware injects HumanMessages flagged with additional_kwargs["dynamic_context_reminder"].
+    # Without this filter those injections would count as "user messages", skewing the first-turn detection.
     @staticmethod
     def _is_user_message_for_title(message: object) -> bool:
         return getattr(message, "type", None) == "human" and not is_dynamic_context_reminder(message)
@@ -85,7 +90,9 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
         user_messages = [m for m in messages if self._is_user_message_for_title(m)]
         assistant_messages = [m for m in messages if m.type == "ai"]
 
-        # Generate title after first complete exchange
+        # [DL-INSIGHT] == 1 user message (not >= 1): title is generated exactly once, on the first exchange.
+        # Once state["title"] is set it short-circuits at the top. >= 1 assistant allows multi-step
+        # first turns (e.g. tool calls before the final text response).
         return len(user_messages) == 1 and len(assistant_messages) >= 1
 
     def _build_title_prompt(self, state: TitleMiddlewareState) -> tuple[str, str]:
@@ -109,6 +116,8 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
         )
         return prompt, user_msg
 
+    # [DL-NOTE] Strips reasoning-model internal traces from both the assistant message sent TO the title
+    # model and the title model's own response. DeepSeek-R1 and Minimax emit these before their answer.
     def _strip_think_tags(self, text: str) -> str:
         """Remove <think>...</think> blocks emitted by reasoning models (e.g. minimax, DeepSeek-R1)."""
         return re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
@@ -128,6 +137,8 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
             return user_msg[:fallback_chars].rstrip() + "..."
         return user_msg if user_msg else "New Conversation"
 
+    # [DL-INSIGHT] The "middleware:title" tag separates this LLM call from lead_agent calls in RunJournal
+    # and telemetry. Without it the title model call would be attributed to the lead agent's billing/tracing.
     def _get_runnable_config(self) -> dict[str, Any]:
         """Inherit the parent RunnableConfig and add middleware tag.
 
@@ -143,6 +154,8 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
         config["tags"] = [*(config.get("tags") or []), "middleware:title"]
         return config
 
+    # [DL-WARN] Sync path deliberately makes NO LLM call — always returns a local truncation of the user
+    # message. The async path (aafter_model) is the real implementation; sync is a safe degradation.
     def _generate_title_result(self, state: TitleMiddlewareState) -> dict | None:
         """Generate a local fallback title without blocking on an LLM call."""
         if not self._should_generate_title(state):

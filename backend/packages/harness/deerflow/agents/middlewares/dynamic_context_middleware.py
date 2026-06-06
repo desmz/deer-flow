@@ -66,6 +66,8 @@ def _last_injected_date(messages: list) -> str | None:
     than content substring matching, so user messages containing ``<system-reminder>``
     are not mistakenly treated as injected reminders.
     """
+    # [DL-INSIGHT] Flag-based detection (not substring match) is the correct approach:
+    # a user could legitimately write "<system-reminder>" in their message.
     for msg in reversed(messages):
         if is_dynamic_context_reminder(msg):
             content_str = msg.content if isinstance(msg.content, str) else str(msg.content)
@@ -102,6 +104,8 @@ class DynamicContextMiddleware(AgentMiddleware):
         self._app_config = app_config
 
     def _build_full_reminder(self) -> str:
+        # [DL-NOTE] Deferred import avoids circular dependency: prompt.py imports from memory,
+        # which must be fully initialized before this is called at runtime.
         from deerflow.agents.lead_agent.prompt import _get_memory_context
 
         # Memory injection is gated by injection_enabled; date is always included.
@@ -139,10 +143,15 @@ class DynamicContextMiddleware(AgentMiddleware):
         If the original message has no ID a stable UUID is generated so the derived
         ``{id}__user`` ID never collapses to the ambiguous ``None__user`` string.
         """
+        # [DL-INSIGHT] ID-swap mechanism: returning [reminder(original_id), user(original_id+"__user")]
+        # exploits LangGraph's add_messages reducer — same ID = in-place replace, new ID = append.
+        # One message slot becomes two, preserving checkpoint order without manual list surgery.
         stable_id = original.id or str(uuid.uuid4())
         reminder_msg = HumanMessage(
             content=reminder_content,
             id=stable_id,
+            # [DL-NOTE] hide_from_ui=True tells the frontend renderer to skip this message.
+            # The user never sees the <system-reminder> block in the chat UI.
             additional_kwargs={"hide_from_ui": True, _DYNAMIC_CONTEXT_REMINDER_KEY: True},
         )
         user_msg = HumanMessage(
@@ -195,6 +204,8 @@ class DynamicContextMiddleware(AgentMiddleware):
         logger.info("DynamicContextMiddleware: midnight crossing detected — injected date update before current turn")
         return {"messages": [reminder_msg, user_msg]}
 
+    # [DL-INSIGHT] Uses before_agent (not before_model) because injection happens once per session,
+    # not per LLM call. before_agent fires once on entry; before_model fires on every turn.
     @override
     def before_agent(self, state, runtime: Runtime) -> dict | None:
         return self._inject(state)

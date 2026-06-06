@@ -51,6 +51,8 @@ class DeferredToolRegistry:
             )
         )
 
+    # [DL-INSIGHT] promote() is the one-way gate: once a tool exits the registry it is never
+    # re-added mid-run. The LLM sees its schema in every subsequent bind_tools call.
     def promote(self, names: set[str]) -> None:
         """Remove tools from the deferred registry so they pass through the filter.
 
@@ -142,6 +144,10 @@ def _regex_score(pattern: str, entry: DeferredToolEntry) -> int:
 # loop.run_in_executor, Python copies the current context to the worker thread,
 # so the ContextVar value is correctly inherited there too.
 
+# [DL-INSIGHT] ContextVar isolation is load-bearing for correctness. Issue #2884 was caused by
+# get_available_tools() calling reset_deferred_registry() unconditionally — when task_tool
+# spawned a subagent (re-entering get_available_tools in the same async context), the parent
+# agent's promoted tools were wiped. Fix: only initialise the registry if none exists yet.
 _registry_var: contextvars.ContextVar[DeferredToolRegistry | None] = contextvars.ContextVar("deferred_tool_registry", default=None)
 
 
@@ -195,8 +201,8 @@ def tool_search(query: str) -> str:
     # This is model-agnostic: all LLMs understand this standard schema.
     tool_defs = [convert_to_openai_function(t) for t in matched_tools[:MAX_RESULTS]]
 
-    # Promote matched tools so the DeferredToolFilterMiddleware stops filtering
-    # them from bind_tools — the LLM now has the full schema and can invoke them.
+    # [DL-NOTE] Promotion happens here, inside the tool itself — not in the middleware.
+    # The tool returns the schema AND unblocks the tool for future turns in one atomic step.
     registry.promote({t.name for t in matched_tools[:MAX_RESULTS]})
 
     return json.dumps(tool_defs, indent=2, ensure_ascii=False)

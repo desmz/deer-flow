@@ -6,12 +6,16 @@ import re
 from copy import copy
 from typing import Any
 
+# [DL-NOTE] All regexes are module-level compiled constants — shared by memory_middleware
+# and summarization_hook, avoiding recompilation overhead on every message batch.
 _UPLOAD_BLOCK_RE = re.compile(r"<uploaded_files>[\s\S]*?</uploaded_files>\n*", re.IGNORECASE)
 _CORRECTION_PATTERNS = (
     re.compile(r"\bthat(?:'s| is) (?:wrong|incorrect)\b", re.IGNORECASE),
     re.compile(r"\byou misunderstood\b", re.IGNORECASE),
     re.compile(r"\btry again\b", re.IGNORECASE),
     re.compile(r"\bredo\b", re.IGNORECASE),
+    # [DL-INSIGHT] Chinese patterns need no \b word boundaries — Chinese text has no spaces
+    # between characters. Pattern set reflects DeerFlow's bilingual (EN/ZH) user base.
     re.compile(r"不对"),
     re.compile(r"你理解错了"),
     re.compile(r"你理解有误"),
@@ -37,6 +41,8 @@ _REINFORCEMENT_PATTERNS = (
 )
 
 
+# [DL-NOTE] Shared normalizer for both string and multi-modal list content —
+# single point of truth before any regex or filter logic touches message text.
 def extract_message_text(message: Any) -> str:
     """Extract plain text from message content for filtering and signal detection."""
     content = getattr(message, "content", "")
@@ -53,6 +59,8 @@ def extract_message_text(message: Any) -> str:
     return str(content)
 
 
+# [DL-NOTE] If a user uploads a file, it strips the giant raw file block out of the text so it doesn't pollute the memory. If the user only uploaded a file
+# without typing a message, it deletes the upload and skips the AI's acknowledgment (e.g., "I've received your file").
 def filter_messages_for_memory(messages: list[Any]) -> list[Any]:
     """Keep only user inputs and final assistant responses for memory updates."""
     filtered = []
@@ -75,6 +83,8 @@ def filter_messages_for_memory(messages: list[Any]) -> list[Any]:
                 filtered.append(msg)
                 skip_next_ai = False
         elif msg_type == "ai":
+            # [DL-INSIGHT] AI messages with tool_calls are mid-turn reasoning steps, not
+            # final responses — only the final bare AI message (no tool_calls) enters memory.
             tool_calls = getattr(msg, "tool_calls", None)
             if not tool_calls:
                 if skip_next_ai:
@@ -85,6 +95,8 @@ def filter_messages_for_memory(messages: list[Any]) -> list[Any]:
     return filtered
 
 
+# [DL-NOTE] Both detectors scan only the last 6 messages — a fixed, non-configurable window.
+# Callers enforce mutual exclusivity: reinforcement is skipped when correction is detected.
 def detect_correction(messages: list[Any]) -> bool:
     """Detect explicit user corrections in recent conversation turns."""
     recent_user_msgs = [msg for msg in messages[-6:] if getattr(msg, "type", None) == "human"]

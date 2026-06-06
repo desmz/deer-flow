@@ -26,9 +26,12 @@ class GuardrailMiddleware(AgentMiddleware[AgentState]):
       - False: allow it through with a warning
     """
 
+    # [DL-INSIGHT] fail_closed=True is a security-first default: if the policy evaluator is broken,
+    # the call is blocked rather than allowed through. Opt-in degradation requires explicit config.
     def __init__(self, provider: GuardrailProvider, *, fail_closed: bool = True, passport: str | None = None):
         self.provider = provider
         self.fail_closed = fail_closed
+        # [DL-NOTE] passport is forwarded as agent_id so providers can do per-agent policy lookups.
         self.passport = passport
 
     def _build_request(self, request: ToolCallRequest) -> GuardrailRequest:
@@ -44,6 +47,8 @@ class GuardrailMiddleware(AgentMiddleware[AgentState]):
         tool_call_id = str(request.tool_call.get("id", "missing_id"))
         reason_text = decision.reasons[0].message if decision.reasons else "blocked by guardrail policy"
         reason_code = decision.reasons[0].code if decision.reasons else "oap.denied"
+        # [DL-INSIGHT] Denial returns a ToolMessage(status="error"), not an exception.
+        # The agent reads the denial reason and can choose an alternative approach; the run continues.
         return ToolMessage(
             content=f"Guardrail denied: tool '{tool_name}' was blocked ({reason_code}). Reason: {reason_text}. Choose an alternative approach.",
             tool_call_id=tool_call_id,
@@ -61,7 +66,8 @@ class GuardrailMiddleware(AgentMiddleware[AgentState]):
         try:
             decision = self.provider.evaluate(gr)
         except GraphBubbleUp:
-            # Preserve LangGraph control-flow signals (interrupt/pause/resume).
+            # [DL-WARN] GraphBubbleUp is LangGraph's exception-as-control-flow (interrupt/pause/resume).
+            # It MUST propagate; catching it would corrupt LangGraph's graph execution state.
             raise
         except Exception:
             logger.exception("Guardrail provider error (sync)")
@@ -84,7 +90,7 @@ class GuardrailMiddleware(AgentMiddleware[AgentState]):
         try:
             decision = await self.provider.aevaluate(gr)
         except GraphBubbleUp:
-            # Preserve LangGraph control-flow signals (interrupt/pause/resume).
+            # [DL-WARN] Same GraphBubbleUp rule applies in async path. See wrap_tool_call.
             raise
         except Exception:
             logger.exception("Guardrail provider error (async)")

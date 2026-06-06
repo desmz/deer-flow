@@ -40,6 +40,8 @@ _DEFAULT_TOOL_FREQ_WARN = 30  # warn after 30 calls to the same tool type
 _DEFAULT_TOOL_FREQ_HARD_LIMIT = 50  # force-stop after 50 calls to the same tool type
 
 
+# [DL-NOTE] Some providers (e.g. Anthropic tool_use) serialize args as a JSON string, not a dict.
+# This normalizer unifies both shapes so hashing is provider-agnostic.
 def _normalize_tool_call_args(raw_args: object) -> tuple[dict, str | None]:
     """Normalize tool call args to a dict plus an optional fallback key.
 
@@ -66,6 +68,12 @@ def _normalize_tool_call_args(raw_args: object) -> tuple[dict, str | None]:
     return {}, json.dumps(raw_args, sort_keys=True, default=str)
 
 
+# [DL-INSIGHT] Tool-specific key derivation avoids false positives: reading file line 1-200 vs 201-400
+# uses the same path but maps to different 200-line buckets, so they hash differently.
+# The agent naturally reads a file in chunks — lines 1–150, then 151–300, then 301–450. That's forward progress, not a loop. But if it reads lines 1–150 three times, that's a loop.
+# read_file   → bucket the range   (progress = different buckets; repetition = same bucket)
+# write/edit  → hash full args     (progress = different content; repetition = same content)
+# everything  → hash salient only  (progress = different intent fields; repetition = same fields)
 def _stable_tool_key(name: str, args: dict, fallback_key: str | None) -> str:
     """Derive a stable key from salient args without overfitting to noise."""
     if name == "read_file" and fallback_key is None:
@@ -90,6 +98,9 @@ def _stable_tool_key(name: str, args: dict, fallback_key: str | None) -> str:
         bucket_end = (bucket_end - 1) // bucket_size
         return f"{path}:{bucket_start}-{bucket_end}"
 
+    # [DL-NOTE] write_file/str_replace: same path, different content = different call. Must hash full args.
+    # Contrast with read_file: same path + same line bucket = genuine loop, so full hash is right there too.
+    # same path + same content = loop
     # write_file / str_replace are content-sensitive: same path may be updated
     # with different payloads during iteration. Using only salient fields (path)
     # can collapse distinct calls, so we hash full args to reduce false positives.
@@ -109,6 +120,8 @@ def _stable_tool_key(name: str, args: dict, fallback_key: str | None) -> str:
     return json.dumps(args, sort_keys=True, default=str)
 
 
+# [DL-INSIGHT] Sort-then-hash makes detection order-independent: the agent calling [bash, read] vs
+# [read, bash] in the same response counts as the same repetition, not two distinct patterns.
 def _hash_tool_calls(tool_calls: list[dict]) -> str:
     """Deterministic hash of a set of tool calls (name + stable key).
 
@@ -190,6 +203,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         self.tool_freq_warn = tool_freq_warn
         self.tool_freq_hard_limit = tool_freq_hard_limit
         self._tool_freq_overrides: dict[str, tuple[int, int]] = tool_freq_overrides or {}
+        # [DL-NOTE] OrderedDict used as a manual LRU: move_to_end on access, popitem(last=False) on eviction.
         self._lock = threading.Lock()
         self._history: OrderedDict[str, list[str]] = OrderedDict()
         self._warned: dict[str, set[str]] = defaultdict(set)
@@ -221,6 +235,8 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
 
         Must be called while holding self._lock.
         """
+        # [DL-NOTE] All four dicts (_history, _warned, _tool_freq, _tool_freq_warned) are co-evicted
+        # so no dict leaks state for a thread that has been removed from the LRU.
         while len(self._history) > self.max_tracked_threads:
             evicted_id, _ = self._history.popitem(last=False)
             self._warned.pop(evicted_id, None)
@@ -340,6 +356,8 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
 
         return None, False
 
+    # [DL-NOTE] Anthropic thinking mode sends content as a list of typed blocks (thinking + text).
+    # Concatenating a string to a list raises TypeError, so we append a new text block instead.
     @staticmethod
     def _append_text(content: str | list | None, text: str) -> str | list:
         """Append *text* to AIMessage content, handling str, list, and None.
@@ -357,6 +375,9 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         # Fallback: coerce unexpected types to str to avoid TypeError
         return str(content) + f"\n\n{text}"
 
+    # [DL-INSIGHT] Hard stop must sanitize three representations of tool calls simultaneously:
+    # (1) msg.tool_calls — the structured list; (2) additional_kwargs["tool_calls"] — raw provider JSON;
+    # (3) additional_kwargs["function_call"] — legacy OpenAI format. Also patches finish_reason to "stop".
     @staticmethod
     def _build_hard_stop_update(last_msg, content: str | list) -> dict:
         """Clear tool-call metadata so forced-stop messages serialize as plain assistant text."""
@@ -388,6 +409,9 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             stripped_msg = last_msg.model_copy(update=self._build_hard_stop_update(last_msg, content))
             return {"messages": [stripped_msg]}
 
+        # [DL-WARN] The warning branch mutates the existing AIMessage to avoid breaking tool-call pairing.
+        # Inserting a HumanMessage between AIMessage(tool_calls) and ToolMessage responses breaks OpenAI/Moonshot.
+        # RFC #2517 tracks the proper fix: deferred injection from after_model to wrap_model_call.
         if warning:
             # WORKAROUND for v2.0-m1 — see #2724.
             #

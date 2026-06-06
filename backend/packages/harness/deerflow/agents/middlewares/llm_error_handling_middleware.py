@@ -24,6 +24,8 @@ from deerflow.config.app_config import AppConfig
 
 logger = logging.getLogger(__name__)
 
+# [DL-NOTE] 429 is in both _RETRIABLE_STATUS_CODES and _QUOTA_PATTERNS. Classification checks
+# quota/auth text FIRST so a quota-rejected 429 is not retried; only a rate-limit 429 is.
 _RETRIABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 _BUSY_PATTERNS = (
     "server busy",
@@ -76,11 +78,14 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         self.circuit_failure_threshold = app_config.circuit_breaker.failure_threshold
         self.circuit_recovery_timeout_sec = app_config.circuit_breaker.recovery_timeout_sec
 
-        # Circuit Breaker state
+        # [DL-INSIGHT] Circuit breaker: three states (closed → open → half_open → closed/open).
+        # threading.Lock guards state shared by both sync and async call paths.
         self._circuit_lock = threading.Lock()
         self._circuit_failure_count = 0
         self._circuit_open_until = 0.0
         self._circuit_state = "closed"
+        # [DL-NOTE] _circuit_probe_in_flight: only one request is let through in half_open state;
+        # all concurrent requests fast-fail until that probe succeeds or fails.
         self._circuit_probe_in_flight = False
 
     def _check_circuit(self) -> bool:
@@ -141,6 +146,9 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         error_code = _extract_error_code(exc)
         status_code = _extract_status_code(exc)
 
+        # [DL-INSIGHT] Quota and auth are checked first, before status code. This ensures a
+        # quota-rejected 429 ("insufficient_quota") is classified non-retriable and doesn't trip
+        # the circuit breaker — only infra failures should do that.
         if _matches_any(lowered, _QUOTA_PATTERNS) or _matches_any(str(error_code).lower(), _QUOTA_PATTERNS):
             return False, "quota"
         if _matches_any(lowered, _AUTH_PATTERNS):
@@ -163,9 +171,13 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         return False, "generic"
 
     def _build_retry_delay_ms(self, attempt: int, exc: BaseException) -> int:
+        # [DL-NOTE] Retry-After header takes priority over computed backoff; providers that
+        # send the header (e.g. OpenAI 429) get their requested delay honoured exactly.
         retry_after = _extract_retry_after_ms(exc)
         if retry_after is not None:
             return retry_after
+        # [DL-NOTE] Exponential backoff: base * 2^(attempt-1), capped at retry_cap_delay_ms.
+        # attempt=1 → base (1s), attempt=2 → 2s, attempt=3 → 4s, attempt=4 → 8s (cap).
         backoff = self.retry_base_delay_ms * (2 ** max(0, attempt - 1))
         return min(backoff, self.retry_cap_delay_ms)
 
@@ -188,6 +200,8 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         return f"LLM request failed: {detail}"
 
     def _emit_retry_event(self, attempt: int, wait_ms: int, reason: str) -> None:
+        # [DL-NOTE] Lazy import avoids circular dependency; pushes a "llm_retry" custom event
+        # to the LangGraph stream so the frontend can render a "retrying..." indicator.
         try:
             from langgraph.config import get_stream_writer
 
@@ -221,7 +235,9 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                 self._record_success()
                 return response
             except GraphBubbleUp:
-                # Preserve LangGraph control-flow signals (interrupt/pause/resume).
+                # [DL-WARN] GraphBubbleUp is LangGraph's control-flow signal (interrupt/pause).
+                # It must re-raise — converting it to an AIMessage would silently swallow the
+                # interrupt. In half_open, reset the probe flag so a real probe can follow.
                 with self._circuit_lock:
                     if self._circuit_state == "half_open":
                         self._circuit_probe_in_flight = False
@@ -247,8 +263,13 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                     _extract_error_detail(exc),
                     exc_info=exc,
                 )
+                # [DL-INSIGHT] Only retriable failures trip the circuit breaker; quota/auth
+                # errors are the provider's business logic, not infra instability.
                 if retriable:
                     self._record_failure()
+                # [DL-INSIGHT] Terminal errors are absorbed: returned as AIMessage, not raised.
+                # The agent turn continues — the LLM sees its own error as the "model response"
+                # and can relay it to the user. No exception reaches the LangGraph runtime.
                 return AIMessage(content=self._build_user_message(exc, reason))
 
     @override
@@ -329,6 +350,8 @@ def _extract_status_code(exc: BaseException) -> int | None:
     return status if isinstance(status, int) else None
 
 
+# [DL-NOTE] Handles three Retry-After formats: numeric ms (Retry-After-Ms), numeric seconds
+# (Retry-After integer), and HTTP date string (RFC 2822) — the latter converted to a delta.
 def _extract_retry_after_ms(exc: BaseException) -> int | None:
     response = getattr(exc, "response", None)
     headers = getattr(response, "headers", None)

@@ -14,6 +14,8 @@ from langgraph.runtime import Runtime
 
 logger = logging.getLogger(__name__)
 
+# [DL-NOTE] Stored in AIMessage.additional_kwargs so the frontend can read step-level attribution
+# (what kind of step, what tools ran, what todo actions fired) from the message stream.
 TOKEN_USAGE_ATTRIBUTION_KEY = "token_usage_attribution"
 
 
@@ -69,6 +71,9 @@ def _todo_action_kind(previous: Todo | None, current: Todo) -> str:
     return "todo_update"
 
 
+# [DL-INSIGHT] Diffs previous vs next todos to produce fine-grained actions (start/complete/update/remove).
+# Matching is content-first (same text = same task, status may change), then position-fallback
+# (new task at same slot). Unmatched previous entries become todo_remove actions.
 def _build_todo_actions(previous_todos: list[Todo], next_todos: list[Todo]) -> list[dict[str, Any]]:
     # This is the single source of truth for precise write_todos token
     # attribution. The frontend intentionally falls back to a generic
@@ -203,6 +208,9 @@ def _describe_tool_call(tool_call: dict[str, Any], todos: list[Todo]) -> list[di
     ]
 
 
+# [DL-NOTE] Step kinds used by the frontend to label each AI step in the UI:
+# tool_batch=multiple tools, subagent_dispatch=single task call, todo_update=write_todos only,
+# final_answer=text with no tools, thinking=empty intermediate turn (reasoning model warmup).
 def _infer_step_kind(message: AIMessage, actions: list[dict[str, Any]]) -> str:
     if actions:
         first_kind = actions[0].get("kind")
@@ -253,6 +261,8 @@ def _build_attribution(message: AIMessage, todos: list[Todo]) -> dict[str, Any]:
         if tool_call_id is not None:
             tool_call_ids.append(tool_call_id)
 
+    # [DL-NOTE] version:1 makes this schema forward-compatible — new fields must be additive
+    # so older frontends can ignore them and fall back to a generic label safely.
     return {
         # Schema changes should remain additive where possible so older
         # frontends can ignore unknown fields and fall back safely.
@@ -272,12 +282,11 @@ class TokenUsageMiddleware(AgentMiddleware):
         if not messages:
             return None
 
-        # Annotate subagent token usage onto the AIMessage that dispatched it.
-        # When a task tool completes, its usage is cached by tool_call_id.  Detect
-        # the ToolMessage → search backward for the corresponding AIMessage → merge.
-        # Walk backward through consecutive ToolMessages before the new AIMessage
-        # so that multiple concurrent task tool calls all get their subagent tokens
-        # written back to the same dispatch message (merging into one update).
+        # [DL-INSIGHT] Cross-message token accumulation: when multiple concurrent task calls complete,
+        # each ToolMessage is walked backward to its dispatching AIMessage, and all subagent tokens
+        # accumulate into one state_updates entry at the dispatch index before any write is committed.
+        # [DL-NOTE] Lazy import breaks a circular dependency: task_tool imports deerflow.subagents,
+        # which is initialized by the same agent factory that imports token_usage_middleware at module level.
         state_updates: dict[int, AIMessage] = {}
         if len(messages) >= 2:
             from deerflow.tools.builtins.task_tool import pop_cached_subagent_usage
@@ -341,6 +350,8 @@ class TokenUsageMiddleware(AgentMiddleware):
         attribution = _build_attribution(last, todos if isinstance(todos, list) else [])
         additional_kwargs = dict(getattr(last, "additional_kwargs", {}) or {})
 
+        # [DL-NOTE] Idempotency guard: skip the attribution write if it hasn't changed.
+        # Still flushes any pending subagent usage updates in state_updates.
         if additional_kwargs.get(TOKEN_USAGE_ATTRIBUTION_KEY) == attribution:
             return {"messages": [state_updates[idx] for idx in sorted(state_updates)]} if state_updates else None
 

@@ -35,8 +35,14 @@ class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
     This replaces the tool-based approach where clarification continued the conversation flow.
     """
 
+    # [DL-INSIGHT] Must be last in the middleware chain (innermost wrap_tool_call). This ensures
+    # every outer middleware (ToolErrorHandling, GuardrailMiddleware, etc.) receives the
+    # Command(goto=END) as a normal return value rather than having it intercepted mid-chain.
+    # The actual ask_clarification_tool body is never executed — handler() is never called.
     state_schema = ClarificationMiddlewareState
 
+    # [DL-NOTE] Stable ID prevents duplicate clarification messages on retry/hot-reload.
+    # Same tool_call_id → same message ID → frontend replaces rather than appends.
     def _stable_message_id(self, tool_call_id: str, formatted_message: str) -> str:
         """Build a deterministic message ID so retried clarification calls replace, not append."""
         if tool_call_id:
@@ -69,9 +75,8 @@ class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
         context = args.get("context")
         options = args.get("options", [])
 
-        # Some models (e.g. Qwen3-Max) serialize array parameters as JSON strings
-        # instead of native arrays. Deserialize and normalize so `options`
-        # is always a list for the rendering logic below.
+        # [DL-NOTE] Bug #1995: Qwen3-Max serializes list parameters as JSON strings rather than
+        # native arrays. Normalize here so rendering logic always receives a proper list.
         if isinstance(options, str):
             try:
                 options = json.loads(options)
@@ -145,11 +150,10 @@ class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
             name="ask_clarification",
         )
 
-        # Return a Command that:
-        # 1. Adds the formatted tool message
-        # 2. Interrupts execution by going to __end__
-        # Note: We don't add an extra AIMessage here - the frontend will detect
-        # and display ask_clarification tool messages directly
+        # [DL-INSIGHT] Command(goto=END) terminates the LangGraph run immediately — this is
+        # NOT a ToolMessage that continues the agent loop. The run surfaces to the client via SSE;
+        # the frontend detects the ask_clarification ToolMessage and renders the question.
+        # The user's reply starts a new run with the answer as the next HumanMessage.
         return Command(
             update={"messages": [tool_message]},
             goto=END,

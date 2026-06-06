@@ -12,6 +12,8 @@ class GuardrailRequest:
 
     tool_name: str
     tool_input: dict[str, Any]
+    # [DL-NOTE] agent_id carries the passport reference (file path or hosted ID); the provider uses
+    # it to look up OAP policy for this specific agent identity.
     agent_id: str | None = None
     thread_id: str | None = None
     is_subagent: bool = False
@@ -22,6 +24,7 @@ class GuardrailRequest:
 class GuardrailReason:
     """Structured reason for an allow/deny decision (OAP reason object)."""
 
+    # [DL-NOTE] Reason codes follow the OAP standard (e.g. oap.tool_not_allowed, oap.allowed).
     code: str
     message: str = ""
 
@@ -36,6 +39,9 @@ class GuardrailDecision:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+# [DL-INSIGHT] @runtime_checkable enables isinstance(obj, GuardrailProvider) at runtime.
+# Structural (duck-type) Protocol: any class with name + evaluate + aevaluate satisfies it —
+# no inheritance required. Verified by the test: isinstance(AllowlistProvider(), GuardrailProvider).
 @runtime_checkable
 class GuardrailProvider(Protocol):
     """Contract for pluggable tool-call authorization.

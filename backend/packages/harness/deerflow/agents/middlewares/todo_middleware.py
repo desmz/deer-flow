@@ -76,6 +76,9 @@ def _format_completion_reminder(todos: list[Todo]) -> str:
 _TOOL_CALL_FINISH_REASONS = {"tool_calls", "function_call"}
 
 
+# [DL-WARN] Checks four signals to guard against LangChain version drift: tool_calls, invalid_tool_calls,
+# additional_kwargs["tool_calls"/"function_call"], and response_metadata finish_reason. The sentinel test
+# TestToolCallIntentOrError must be updated if a LangChain upgrade introduces new tool-intent fields.
 def _has_tool_call_intent_or_error(message: AIMessage) -> bool:
     """Return True when an AIMessage is not a clean final answer.
 
@@ -104,6 +107,8 @@ def _has_tool_call_intent_or_error(message: AIMessage) -> bool:
     return response_metadata.get("finish_reason") in _TOOL_CALL_FINISH_REASONS
 
 
+# [DL-INSIGHT] state["todos"] is persisted in graph state independently of messages — summarization truncates
+# messages but NOT state. That asymmetry is what makes context-loss detection and reminder injection possible.
 class TodoMiddleware(TodoListMiddleware):
     """Extends TodoListMiddleware with `write_todos` context-loss detection.
 
@@ -113,6 +118,8 @@ class TodoMiddleware(TodoListMiddleware):
     and injects a reminder message so the model can continue tracking progress.
     """
 
+    # [DL-NOTE] Detects context-loss by comparing state["todos"] (always current, survives summarization)
+    # with state["messages"] (may have write_todos truncated). Injects reminder only when the gap exists.
     @override
     def before_model(
         self,
@@ -136,6 +143,7 @@ class TodoMiddleware(TodoListMiddleware):
         # The todo list exists in state but the original write_todos call is gone.
         # Inject a reminder as a HumanMessage so the model stays aware.
         formatted = _format_todos(todos)
+        # [DL-NOTE] hide_from_ui prevents this control prompt from appearing in the user-facing chat transcript.
         reminder = HumanMessage(
             name="todo_reminder",
             additional_kwargs={"hide_from_ui": True},
@@ -169,6 +177,8 @@ class TodoMiddleware(TodoListMiddleware):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._lock = threading.Lock()
+        # [DL-NOTE] Keyed by (thread_id, run_id): each run gets independent reminder state.
+        # before_agent clears stale entries from previous runs; after_agent clears current run on clean exit.
         self._pending_completion_reminders: dict[tuple[str, str], list[str]] = {}
         self._completion_reminder_counts: dict[tuple[str, str], int] = {}
         self._completion_reminder_touch_order: dict[tuple[str, str], int] = {}
@@ -258,6 +268,8 @@ class TodoMiddleware(TodoListMiddleware):
         self._clear_other_run_completion_reminders(runtime)
         return None
 
+    # [DL-INSIGHT] Two-phase completion reminder: queue reminder + return jump_to:model here, then deliver
+    # via wrap_model_call without persisting to graph state (avoids leaking control prompts into transcripts).
     @hook_config(can_jump_to=["model"])
     @override
     def after_model(
@@ -318,6 +330,8 @@ class TodoMiddleware(TodoListMiddleware):
     def _format_pending_completion_reminders(reminders: list[str]) -> str:
         return "\n\n".join(dict.fromkeys(reminders))
 
+    # [DL-NOTE] Drains queued reminders and injects as HumanMessage into ModelRequest at call time —
+    # never written to graph state, so never persisted or visible in the transcript.
     def _augment_request(self, request: ModelRequest) -> ModelRequest:
         reminders = self._drain_completion_reminders(request.runtime)
         if not reminders:

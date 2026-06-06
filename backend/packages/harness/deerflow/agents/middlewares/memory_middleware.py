@@ -25,6 +25,7 @@ class MemoryMiddlewareState(AgentState):
     pass
 
 
+# [DL-NOTE] Implements only `after_agent` — pure side-effect middleware; never modifies state.
 class MemoryMiddleware(AgentMiddleware[MemoryMiddlewareState]):
     """Middleware that queues conversation for memory update after agent execution.
 
@@ -37,6 +38,8 @@ class MemoryMiddleware(AgentMiddleware[MemoryMiddlewareState]):
 
     state_schema = MemoryMiddlewareState
 
+    # [DL-INSIGHT] Accepting explicit memory_config avoids reading global state during after_agent,
+    # making this middleware fully testable in isolation (see test_lead_agent_model_resolution.py).
     def __init__(self, agent_name: str | None = None, *, memory_config: "MemoryConfig | None" = None):
         """Initialize the MemoryMiddleware.
 
@@ -64,7 +67,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryMiddlewareState]):
         if not config.enabled:
             return None
 
-        # Get thread ID from runtime context first, then fall back to LangGraph's configurable metadata
+        # [DL-NOTE] Two-step fallback: runtime.context (newer API) → get_config() configurable (older LangGraph API).
         thread_id = runtime.context.get("thread_id") if runtime.context else None
         if thread_id is None:
             config_data = get_config()
@@ -79,7 +82,8 @@ class MemoryMiddleware(AgentMiddleware[MemoryMiddlewareState]):
             logger.debug("No messages in state, skipping memory update")
             return None
 
-        # Filter to only keep user inputs and final assistant responses
+        # [DL-INSIGHT] filter_messages_for_memory strips tool_calls and upload-only turns;
+        # only user text + final AI text go to the memory LLM — avoids polluting facts with scaffolding.
         filtered_messages = filter_messages_for_memory(messages)
 
         # Only queue if there's meaningful conversation
@@ -92,10 +96,10 @@ class MemoryMiddleware(AgentMiddleware[MemoryMiddlewareState]):
 
         # Queue the filtered conversation for memory update
         correction_detected = detect_correction(filtered_messages)
+        # [DL-NOTE] reinforcement is only checked when no correction found — mutually exclusive signals.
         reinforcement_detected = not correction_detected and detect_reinforcement(filtered_messages)
-        # Capture user_id at enqueue time while the request context is still alive.
-        # threading.Timer fires on a different thread where ContextVar values are not
-        # propagated, so we must store user_id explicitly in ConversationContext.
+        # [DL-WARN] user_id must be captured here (request thread) — threading.Timer fires on a
+        # different thread where ContextVar values are not propagated. See queue.py:ConversationContext.
         user_id = get_effective_user_id()
         queue = get_memory_queue()
         queue.add(

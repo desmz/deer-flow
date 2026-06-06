@@ -120,3 +120,31 @@ Running log of unresolved questions across all study sections.
 - **Phase 2 config-free runtime**: The `create_deerflow_agent` docstring notes "Full config-free runtime is a Phase 2 goal" — some feature-injected tools (e.g. `task_tool`) still read global config at invocation time. Is there a tracking issue?
 - **`todos` untyped list**: `ThreadState.todos` is `NotRequired[list | None]` with no element type, unlike every other collection field. Is this intentional (dynamic shape) or a missed tightening?
 - **`__init__.py` import side effect in tests**: `prime_enabled_skills_cache()` starts a background thread on any import of `deerflow.agents`. How do tests that need to control this guard against it — via `sys.modules` mocks in `conftest.py`?
+
+---
+
+## Section 09 — Backend: Middleware Pipeline (Phase 2 — Before-Agent Middlewares)
+
+- **Lazy sandbox acquisition path**: With `lazy_init=True`, `SandboxMiddleware.before_agent` is a no-op. Who calls `provider.acquire(thread_id)` on the first tool call? Likely inside `SandboxProvider.get()` from a sandbox tool — needs confirmation in `sandbox/tools.py`.
+- **`uses_thread_data_mounts` flag**: `SandboxProvider.uses_thread_data_mounts: bool = False` is declared on the ABC. Does `AioSandboxProvider` set this to `True`? Is it read anywhere to enforce the `ThreadData → Sandbox` ordering constraint, or is ordering enforced only by convention?
+- **`_get_memory_context` sync call in async context**: `DynamicContextMiddleware._build_full_reminder` calls `_get_memory_context()` synchronously. If memory is loaded lazily from disk on first access, this could block the event loop. Is the cache always warm before `before_agent` runs?
+- **`"summary"` name guard**: `_is_user_injection_target` excludes messages with `name == "summary"`. Is `"summary"` the exact attribute written by `SummarizationMiddleware`? Needs confirmation when reading that middleware.
+- **Cross-user memory isolation in async**: `_get_memory_context` calls `get_effective_user_id()` which reads a contextvar. Does this correctly scope memory to the current request's user under concurrent async execution?
+- **Historical uploads scan includes `.md` companion files**: `UploadsMiddleware` scans `uploads/` via `iterdir()` with no suffix filter. Companion `.md` files produced by the conversion pipeline would appear as `historical_files`. Is this intentional or an oversight?
+
+---
+
+## Section 09 — Backend: Middleware Pipeline (Phase 3 — DanglingToolCallMiddleware)
+
+- **`patched == messages` comparison cost**: The no-op early-exit at line 172 relies on Python list equality, which compares each element via `BaseMessage.__eq__`. For a long thread with hundreds of messages, is this O(n) comparison with deep equality a performance concern before every model call?
+- **`additional_kwargs["tool_calls"]` mutual-exclusivity assumption**: The guard `if not tool_calls:` assumes that when `tool_calls` is populated, `additional_kwargs["tool_calls"]` is a duplicate representation of the same calls. Is this always true across all LangChain provider adapters? Could an adapter set both with different call IDs (e.g., a partial streaming response where one field is partially written)?
+- **`setdefault` for duplicate `tool_call_id`**: `tool_messages_by_id.setdefault(msg.tool_call_id, msg)` keeps only the first `ToolMessage` for a given `tool_call_id` if duplicates appear in history. In what scenario could the same ID appear twice — LangGraph state re-hydration, a retry, or a bug upstream?
+
+---
+
+## Section 09 — Backend: Middleware Pipeline (Phase 5 — SummarizationMiddleware)
+
+- **`"summary"` name now confirmed**: `DeerFlowSummarizationMiddleware._build_new_messages` sets `name="summary"` on the injected HumanMessage. The guard in `DynamicContextMiddleware._is_user_injection_target` correctly matches this. (Answers the open question from Phase 2.)
+- **`_find_skill_bundles` ToolMessage lookahead**: The inner `while j < n and isinstance(messages[j], ToolMessage)` advances `j` past all consecutive ToolMessages after an AIMessage, then walks `range(i+1, j)` to match results. Does this correctly handle interleaved non-ToolMessages (e.g., a HumanMessage injected between AIMessage and its ToolMessages)? In practice LangGraph guarantees contiguity, but the parser silently misses them if that invariant breaks.
+- **Skill bundle splitting on AIMessage with mixed tool calls**: When an AIMessage has both skill reads and non-skill reads, the code creates two clones — one preserved (skill calls, empty content), one summarized (non-skill calls, original content). Does the model correctly reconstruct the intent from a content-empty AIMessage with only skill tool_calls in the preserved portion?
+- **`before_summarization` hook ordering contract**: Hooks fire in registration order, but this is implicit (list iteration). Should this be documented as a public API guarantee, or is it an implementation detail that could change?

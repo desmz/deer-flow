@@ -1,4 +1,6 @@
 """Memory storage providers."""
+# [DL-INSIGHT] Three-tier path routing: user+agent → user-only → legacy (no user_id).
+# Absolute storage_path in config opts out of per-user isolation (all users share one file).
 
 import abc
 import json
@@ -21,6 +23,8 @@ def utc_now_iso_z() -> str:
     return datetime.now(UTC).isoformat().removesuffix("+00:00") + "Z"
 
 
+# [DL-NOTE] create_empty_memory() is the canonical shape for memory.json —
+# the single source of truth for the data structure consumed by prompt.py and updater.py.
 def create_empty_memory() -> dict[str, Any]:
     """Create an empty memory structure."""
     return {
@@ -40,6 +44,8 @@ def create_empty_memory() -> dict[str, Any]:
     }
 
 
+# [DL-INSIGHT] ABC enables swappable storage backends (file, Redis, DB) via the
+# storage_class config field — same reflection pattern used throughout the harness.
 class MemoryStorage(abc.ABC):
     """Abstract base class for memory storage providers."""
 
@@ -70,6 +76,8 @@ class FileMemoryStorage(MemoryStorage):
         # Guards all reads and writes to _memory_cache across concurrent callers.
         self._cache_lock = threading.Lock()
 
+    # [DL-INSIGHT] Path-traversal guard: rejects "../etc/passwd", slashes, spaces, etc.
+    # Reuses AGENT_NAME_PATTERN so memory and agent subsystems share the same name rules.
     def _validate_agent_name(self, agent_name: str) -> None:
         """Validate that the agent name is safe to use in filesystem paths.
 
@@ -88,6 +96,8 @@ class FileMemoryStorage(MemoryStorage):
                 self._validate_agent_name(agent_name)
                 return get_paths().user_agent_memory_file(user_id, agent_name)
             config = get_memory_config()
+            # [DL-WARN] Absolute storage_path bypasses per-user isolation even when user_id
+            # is provided — all users share one file. Relative paths are ignored in this branch.
             if config.storage_path and Path(config.storage_path).is_absolute():
                 return Path(config.storage_path)
             return get_paths().user_memory_file(user_id)
@@ -130,6 +140,9 @@ class FileMemoryStorage(MemoryStorage):
         except OSError:
             current_mtime = None
 
+        # [DL-INSIGHT] mtime-based cache: two lock acquisitions keep expensive file I/O
+        # outside the critical section. Concurrent cache misses are benign (both reads
+        # return identical data; the second writer simply overwrites the first).
         with self._cache_lock:
             cached = self._memory_cache.get(cache_key)
             if cached is not None and cached[1] == current_mtime:
@@ -169,6 +182,9 @@ class FileMemoryStorage(MemoryStorage):
             # updated before the file write succeeds.
             memory_data = {**memory_data, "lastUpdated": utc_now_iso_z()}
 
+            # [DL-INSIGHT] Atomic write: write to a uuid-named .tmp file then os.rename
+            # (temp_path.replace). On POSIX this is atomic; avoids partial reads by
+            # concurrent load() callers if the process crashes mid-write.
             temp_path = file_path.with_suffix(f".{uuid.uuid4().hex}.tmp")
             with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(memory_data, f, indent=2, ensure_ascii=False)
@@ -193,6 +209,8 @@ _storage_instance: MemoryStorage | None = None
 _storage_lock = threading.Lock()
 
 
+# [DL-INSIGHT] Double-checked locking singleton: first check avoids the lock on the hot path;
+# second check inside the lock guards against two threads racing past the first check.
 def get_memory_storage() -> MemoryStorage:
     """Get the configured memory storage instance."""
     global _storage_instance
@@ -221,6 +239,8 @@ def get_memory_storage() -> MemoryStorage:
 
             _storage_instance = storage_class()
         except Exception as e:
+            # [DL-NOTE] Any reflection failure (bad import, wrong base class) silently
+            # degrades to FileMemoryStorage so the agent starts rather than crashing.
             logger.error(
                 "Failed to load memory storage %s, falling back to FileMemoryStorage: %s",
                 storage_class_path,

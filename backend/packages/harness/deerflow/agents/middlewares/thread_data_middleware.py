@@ -12,6 +12,8 @@ from deerflow.agents.thread_state import ThreadDataState
 from deerflow.config.paths import Paths, get_paths
 from deerflow.runtime.user_context import get_effective_user_id
 
+# [DL-NOTE] See: deerflow/config/paths.py — Paths encapsulates the full directory layout and validates IDs
+
 logger = logging.getLogger(__name__)
 
 
@@ -46,6 +48,8 @@ class ThreadDataMiddleware(AgentMiddleware[ThreadDataMiddlewareState]):
                       Default is True for optimal performance.
         """
         super().__init__()
+        # [DL-INSIGHT] __init__ is called at chain-build time (per LangGraph request), not per invocation.
+        # lazy_init=True avoids filesystem I/O during graph compilation.
         self._paths = Paths(base_dir) if base_dir else get_paths()
         self._lazy_init = lazy_init
 
@@ -83,12 +87,15 @@ class ThreadDataMiddleware(AgentMiddleware[ThreadDataMiddlewareState]):
         context = runtime.context or {}
         thread_id = context.get("thread_id")
         if thread_id is None:
+            # [DL-INSIGHT] Dual lookup: runtime.context (newer harness API) first,
+            # config.configurable (classic LangGraph API) as fallback for backward compat.
             config = get_config()
             thread_id = config.get("configurable", {}).get("thread_id")
 
         if thread_id is None:
             raise ValueError("Thread ID is required in runtime context or config.configurable")
 
+        # [DL-NOTE] get_effective_user_id() reads a contextvar set by auth middleware; returns "default" in no-auth mode.
         user_id = get_effective_user_id()
 
         if self._lazy_init:
@@ -102,6 +109,8 @@ class ThreadDataMiddleware(AgentMiddleware[ThreadDataMiddlewareState]):
         messages = list(state.get("messages", []))
         last_message = messages[-1] if messages else None
 
+        # [DL-INSIGHT] Secondary concern: injects run_id + ISO timestamp onto the latest HumanMessage.
+        # ThreadDataMiddleware doubles as a request-metadata injector for audit/debug traceability.
         if last_message and isinstance(last_message, HumanMessage):
             messages[-1] = HumanMessage(
                 content=last_message.content,

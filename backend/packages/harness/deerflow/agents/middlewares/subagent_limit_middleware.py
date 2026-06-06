@@ -22,6 +22,8 @@ def _clamp_subagent_limit(value: int) -> int:
     return max(MIN_SUBAGENT_LIMIT, min(MAX_SUBAGENT_LIMIT, value))
 
 
+# [DL-INSIGHT] Prompt instructions alone can't reliably cap tool call counts — the model ignores them
+# under load. Code enforcement here is the authoritative boundary, not the system prompt.
 class SubagentLimitMiddleware(AgentMiddleware[AgentState]):
     """Truncates excess 'task' tool calls from a single model response.
 
@@ -56,6 +58,8 @@ class SubagentLimitMiddleware(AgentMiddleware[AgentState]):
         if len(task_indices) <= self.max_concurrent:
             return None
 
+        # [DL-NOTE] Filtering by original index (not ID) preserves non-task calls like bash/read_file intact.
+        # Only the excess task calls are dropped; everything else passes through unchanged.
         # Build set of indices to drop (excess task calls beyond the limit)
         indices_to_drop = set(task_indices[self.max_concurrent :])
         truncated_tool_calls = [tc for i, tc in enumerate(tool_calls) if i not in indices_to_drop]
@@ -63,6 +67,8 @@ class SubagentLimitMiddleware(AgentMiddleware[AgentState]):
         dropped_count = len(indices_to_drop)
         logger.warning(f"Truncated {dropped_count} excess task tool call(s) from model response (limit: {self.max_concurrent})")
 
+        # [DL-NOTE] clone_ai_message_with_tool_calls also syncs additional_kwargs["tool_calls"] by ID,
+        # keeping the raw provider payload consistent with the structured tool_calls list.
         # Replace the AIMessage with truncated tool_calls (same id triggers replacement)
         updated_msg = clone_ai_message_with_tool_calls(last_msg, truncated_tool_calls)
         return {"messages": [updated_msg]}

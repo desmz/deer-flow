@@ -4,6 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+# [DL-NOTE] Three modes mirror LangChain's ContextSize union: fraction (% of model max), tokens, messages.
 ContextSizeType = Literal["fraction", "tokens", "messages"]
 
 
@@ -13,6 +14,7 @@ class ContextSize(BaseModel):
     type: ContextSizeType = Field(description="Type of context size specification")
     value: int | float = Field(description="Value for the context size specification")
 
+    # [DL-NOTE] Pydantic → LangChain bridge: DeerFlow stores as model, base class expects tuple.
     def to_tuple(self) -> tuple[ContextSizeType, int | float]:
         """Convert to tuple format expected by SummarizationMiddleware."""
         return (self.type, self.value)
@@ -21,6 +23,7 @@ class ContextSize(BaseModel):
 class SummarizationConfig(BaseModel):
     """Configuration for automatic conversation summarization."""
 
+    # [DL-NOTE] Off by default; users must explicitly opt in via config.yaml → summarization.enabled.
     enabled: bool = Field(
         default=False,
         description="Whether to enable automatic conversation summarization",
@@ -51,6 +54,8 @@ class SummarizationConfig(BaseModel):
         default=None,
         description="Custom prompt template for generating summaries. If not provided, uses the default LangChain prompt.",
     )
+    # [DL-INSIGHT] Skill preservation fields below are DeerFlow-only; not in LangChain's base SummarizationMiddleware.
+    # Skill file content lives in ToolMessage bodies; losing them breaks the agent's skill awareness mid-conversation.
     preserve_recent_skill_count: int = Field(
         default=5,
         ge=0,
@@ -72,7 +77,7 @@ class SummarizationConfig(BaseModel):
     )
 
 
-# Global configuration instance
+# [DL-NOTE] Module-level singleton; matches the pattern used by loop_detection_config, title_config, etc.
 _summarization_config: SummarizationConfig = SummarizationConfig()
 
 
