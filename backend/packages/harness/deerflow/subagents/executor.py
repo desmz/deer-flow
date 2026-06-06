@@ -31,6 +31,8 @@ from deerflow.subagents.token_collector import SubagentTokenCollector
 logger = logging.getLogger(__name__)
 
 
+# [DL-INSIGHT] Hot-reload guard: if the module is re-imported (uvicorn --reload), shut down the
+# previous isolated event loop before the new module-level globals replace it, preventing orphaned threads.
 _previous_shutdown_isolated_subagent_loop = globals().get("_shutdown_isolated_subagent_loop")
 if callable(_previous_shutdown_isolated_subagent_loop):
     atexit.unregister(_previous_shutdown_isolated_subagent_loop)
@@ -85,9 +87,12 @@ class SubagentResult:
 _background_tasks: dict[str, SubagentResult] = {}
 _background_tasks_lock = threading.Lock()
 
-# Thread pool for background task scheduling and orchestration
+# [DL-NOTE] Scheduler pool handles task dispatch only; actual execution runs on the persistent isolated loop, not here.
 _scheduler_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="subagent-scheduler-")
 
+# [DL-INSIGHT] A single persistent loop in a daemon thread is the core concurrency design. asyncio.run() cannot be
+# called inside an already-running loop (LangGraph/FastAPI are always async), so subagent coroutines are submitted
+# here via asyncio.run_coroutine_threadsafe() instead.
 # Persistent event loop for isolated subagent executions triggered from an
 # already-running parent loop. Reusing one long-lived loop avoids creating a
 # fresh loop per execution and then closing async resources bound to it.
@@ -183,6 +188,8 @@ def _submit_to_isolated_loop_in_context(
     coro_factory: Callable[[], Coroutine[Any, Any, SubagentResult]],
 ) -> Future[SubagentResult]:
     """Submit a coroutine to the isolated loop while preserving ContextVar state."""
+    # [DL-INSIGHT] context.run() propagates ContextVars (e.g. user_id from runtime.user_context) across
+    # the thread boundary. Without this, the subagent's ContextVars would inherit the isolated loop thread's empty context.
     return context.run(
         lambda: asyncio.run_coroutine_threadsafe(
             coro_factory(),
@@ -208,6 +215,8 @@ def _filter_tools(
     """
     filtered = all_tools
 
+    # [DL-NOTE] Allowlist applied first (narrows), then denylist (removes). For bash_agent the denylist is redundant
+    # since the allowlist already excludes those tools; for general_purpose it's the only active filter.
     # Apply allowlist if specified
     if allowed is not None:
         allowed_set = set(allowed)
@@ -286,6 +295,9 @@ class SubagentExecutor:
         # Reuse shared middleware composition with lead agent.
         middlewares = build_subagent_runtime_middlewares(app_config=app_config, model_name=self.model_name, lazy_init=True)
 
+        # [DL-INSIGHT] system_prompt=None here because the system prompt is injected as the first message in
+        # _build_initial_state, merged with skill content into one SystemMessage. Passing it here AND there
+        # would produce duplicate SystemMessages which some LLM APIs reject.
         # system_prompt is included in initial state messages (see _build_initial_state)
         # to avoid multiple SystemMessages which some LLM APIs don't support.
         return create_agent(
@@ -468,7 +480,12 @@ class SubagentExecutor:
                     result.token_usage_records = collector.snapshot_records()
                 return result
 
+            # [DL-INSIGHT] stream_mode="values" yields full ThreadState snapshots per step. This allows collecting
+            # all AIMessages by scanning each snapshot, at the cost of deduplication logic (lines below). "messages" mode
+            # would yield deltas but requires reassembly; "values" is simpler given the full-state ThreadState schema.
             async for chunk in agent.astream(state, config=run_config, context=context, stream_mode="values"):  # type: ignore[arg-type]
+                # [DL-WARN] Cooperative cancellation only fires at iteration boundaries — a long-running tool call
+                # (e.g. a slow bash command) blocks until that tool returns and the next chunk is yielded.
                 # Cooperative cancellation: check if parent requested stop.
                 # Note: cancellation is only detected at astream iteration boundaries,
                 # so long-running tool calls within a single iteration will not be
@@ -652,6 +669,8 @@ class SubagentExecutor:
             except RuntimeError:
                 loop = None
 
+            # [DL-INSIGHT] Dual execution path: tests and CLI land on asyncio.run (no running loop);
+            # LangGraph/FastAPI always have a running loop, so they route to the persistent isolated loop.
             if loop is not None and loop.is_running():
                 logger.debug(f"[trace={self.trace_id}] Subagent {self.config.name} detected running event loop, using isolated loop")
                 return self._execute_in_isolated_loop(task, result_holder)
@@ -742,6 +761,8 @@ class SubagentExecutor:
                     _background_tasks[task_id].error = str(e)
                     _background_tasks[task_id].completed_at = datetime.now()
 
+        # [DL-NOTE] task_tool.py calls execute_async(prompt, task_id=tool_call_id), linking the background
+        # task to the specific LangChain tool call so token usage can be merged back by tool_call_id.
         _scheduler_pool.submit(run_task)
         return task_id
 

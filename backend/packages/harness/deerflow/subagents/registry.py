@@ -11,6 +11,8 @@ from deerflow.subagents.config import SubagentConfig
 logger = logging.getLogger(__name__)
 
 
+# [DL-NOTE] Duck-typing adapter: accepts either a full AppConfig (has .subagents) or a SubagentsAppConfig directly.
+# Allows tests to pass lightweight fakes without needing a full AppConfig object.
 def _resolve_subagents_app_config(app_config: Any | None = None):
     if app_config is None:
         from deerflow.config.subagents_config import get_subagents_app_config
@@ -63,6 +65,7 @@ def get_subagent_config(name: str, *, app_config: Any | None = None) -> Subagent
         SubagentConfig if found (with any config.yaml overrides applied), None otherwise.
     """
     # Step 1: Look up built-in, then fall back to custom_agents
+    # [DL-INSIGHT] Builtins always win: if a custom agent shares a name with a builtin, the builtin is returned unchanged.
     config = BUILTIN_SUBAGENTS.get(name)
     if config is None:
         config = _build_custom_subagent_config(name, app_config=app_config)
@@ -75,6 +78,7 @@ def get_subagent_config(name: str, *, app_config: Any | None = None) -> Subagent
     # but must NOT override custom agents' own values — custom agents define
     # their own defaults in the custom_agents section.
     subagents_config = _resolve_subagents_app_config(app_config)
+    # [DL-NOTE] Global timeout/max_turns from SubagentsAppConfig apply to builtins only — custom agents define their own defaults.
     is_builtin = name in BUILTIN_SUBAGENTS
     agent_override = subagents_config.agents.get(name)
 
@@ -111,6 +115,7 @@ def get_subagent_config(name: str, *, app_config: Any | None = None) -> Subagent
         overrides["skills"] = effective_skills
 
     if overrides:
+        # [DL-INSIGHT] dataclasses.replace() creates a new SubagentConfig — BUILTIN_SUBAGENTS entries are never mutated.
         config = replace(config, **overrides)
 
     return config
@@ -160,6 +165,8 @@ def get_available_subagent_names(*, app_config: Any | None = None) -> list[str]:
         logger.debug("Could not determine host bash availability; exposing all subagents")
         return names
 
+    # [DL-INSIGHT] Capability gate: bash subagent is hidden when local sandbox doesn't allow host execution.
+    # Non-local sandboxes (Docker/provisioner) always allow it; local needs explicit sandbox.allow_host_bash=true.
     if not host_bash_allowed:
         names = [name for name in names if name != "bash"]
     return names

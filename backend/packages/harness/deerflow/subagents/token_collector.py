@@ -12,6 +12,7 @@ from typing import Any
 from langchain_core.callbacks import BaseCallbackHandler
 
 
+# [DL-INSIGHT] One collector per subagent run; injected via LangChain callbacks so it fires on every LLM call inside the subagent graph — no manual wiring in the subagent code itself.
 class SubagentTokenCollector(BaseCallbackHandler):
     """Lightweight callback handler that collects LLM token usage within a subagent."""
 
@@ -19,6 +20,7 @@ class SubagentTokenCollector(BaseCallbackHandler):
         super().__init__()
         self.caller = caller
         self._records: list[dict[str, int | str]] = []
+        # [DL-NOTE] Deduplication guard: LangChain can fire on_llm_end multiple times per run_id (streaming deltas + final); set prevents double-counting.
         self._counted_run_ids: set[str] = set()
 
     def on_llm_end(
@@ -56,8 +58,11 @@ class SubagentTokenCollector(BaseCallbackHandler):
                         "total_tokens": total_tk,
                     }
                 )
+                # [DL-NOTE] Early return: one LLM call produces exactly one record — only the first non-zero generation is counted.
                 return
 
+    # [DL-NOTE] Transfer point: executor calls this after the subagent finishes, stores result in SubagentResult.token_usage_records,
+    # then task_tool.py fetches the parent RunJournal via callbacks and calls journal.record_external_llm_usage_records(records).
     def snapshot_records(self) -> list[dict[str, int | str]]:
         """Return a copy of the accumulated usage records."""
         return list(self._records)

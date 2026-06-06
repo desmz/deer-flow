@@ -2,6 +2,7 @@
 
 from deerflow.subagents.config import SubagentConfig
 
+# [DL-NOTE] Conditionally visible: registry.py hides this subagent when is_host_bash_allowed() returns False (local sandbox without explicit allow_host_bash=true).
 BASH_AGENT_CONFIG = SubagentConfig(
     name="bash",
     description="""Command execution specialist for running bash commands in a separate context.
@@ -43,7 +44,9 @@ You have access to the sandbox environment:
 - Prefer relative paths from the workspace, such as `hello.txt`, `../uploads/input.csv`, and `../outputs/result.md`, when composing commands or helper scripts
 </working_directory>
 """,
+    # [DL-INSIGHT] Explicit allowlist (vs general_purpose's None+denylist). Only sandbox tools are permitted — no web search, MCP, or reasoning tools.
     tools=["bash", "ls", "read_file", "write_file", "str_replace"],  # Sandbox tools only
+    # [DL-NOTE] Redundant given the allowlist above, but kept as explicit security intent — makes the "no nesting, no clarification" constraint self-documenting.
     disallowed_tools=["task", "ask_clarification", "present_files"],
     model="inherit",
     max_turns=60,

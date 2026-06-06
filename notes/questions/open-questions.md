@@ -148,3 +148,23 @@ Running log of unresolved questions across all study sections.
 - **`_find_skill_bundles` ToolMessage lookahead**: The inner `while j < n and isinstance(messages[j], ToolMessage)` advances `j` past all consecutive ToolMessages after an AIMessage, then walks `range(i+1, j)` to match results. Does this correctly handle interleaved non-ToolMessages (e.g., a HumanMessage injected between AIMessage and its ToolMessages)? In practice LangGraph guarantees contiguity, but the parser silently misses them if that invariant breaks.
 - **Skill bundle splitting on AIMessage with mixed tool calls**: When an AIMessage has both skill reads and non-skill reads, the code creates two clones — one preserved (skill calls, empty content), one summarized (non-skill calls, original content). Does the model correctly reconstruct the intent from a content-empty AIMessage with only skill tool_calls in the preserved portion?
 - **`before_summarization` hook ordering contract**: Hooks fire in registration order, but this is implicit (list iteration). Should this be documented as a public API guarantee, or is it an implementation detail that could change?
+
+---
+
+## Section 11 — Backend: Subagents (Phase 2 — Builtins & Executor)
+
+- **Cooperative cancellation gap for long tools**: `future.cancel()` has no effect on a
+  `run_coroutine_threadsafe`-submitted future once the coroutine has started. A bash command
+  running for 14 minutes inside a 15-minute timeout will trigger TIMED_OUT on the scheduler
+  thread, but `_aexecute` continues on the isolated loop until the tool returns. The
+  `cancel_event` check only fires at the next `astream` boundary.
+- **`_background_tasks` leak on lead agent crash**: `cleanup_background_task` is called by
+  `task_tool.py` after polling completes. If the lead agent crashes after `execute_async`
+  but before polling, the task entry stays in `_background_tasks` for the process lifetime.
+  Is there a TTL expiry or GC sweep?
+- **Vision middleware at agent-creation vs executor-init**: For `model="inherit"` subagents,
+  model resolution is deferred from `__init__` to `_create_agent`. Does `build_subagent_runtime_middlewares`
+  correctly pick up the resolved model name, ensuring the vision check is accurate?
+- **`ai_messages` dict-equality fallback performance**: When an `AIMessage` has no `id`
+  field, deduplication falls back to `message_dict in ai_messages` (full dict equality).
+  For a 100-turn subagent with large messages, this is O(n×m) per chunk.

@@ -2,6 +2,7 @@
 
 from deerflow.subagents.config import SubagentConfig
 
+# [DL-NOTE] Module-level singleton; instantiated once at import time and registered in BUILTIN_SUBAGENTS dict (builtins/__init__.py).
 GENERAL_PURPOSE_CONFIG = SubagentConfig(
     name="general-purpose",
     description="""A capable agent for complex, multi-step tasks that require both exploration and action.
@@ -33,6 +34,7 @@ When you complete the task, provide:
 5. Citations: Use `[citation:Title](URL)` format for external sources
 </output_format>
 
+# [DL-INSIGHT] Subagent shares the parent's sandbox — no separate isolation boundary. The virtual paths below are the same mount points the lead agent uses.
 <working_directory>
 You have access to the same sandbox environment as the parent agent:
 - User uploads: `/mnt/user-data/uploads`
@@ -43,8 +45,11 @@ You have access to the same sandbox environment as the parent agent:
 - Prefer relative paths from the workspace, such as `hello.txt`, `../uploads/input.csv`, and `../outputs/result.md`, when writing scripts or shell commands
 </working_directory>
 """,
+    # [DL-INSIGHT] tools=None means inherit the full parent toolset; disallowed_tools is the denylist. Adding tools here would narrow, not replace.
     tools=None,  # Inherit all tools from parent
+    # [DL-INSIGHT] task blocked → no subagent nesting; ask_clarification blocked → enforces autonomy; present_files blocked → only lead agent surfaces outputs to user.
     disallowed_tools=["task", "ask_clarification", "present_files"],  # Prevent nesting and clarification
     model="inherit",
+    # [DL-NOTE] 100 turns is double the SubagentConfig default (50) — intentional for complex multi-step work; 15-min wall-clock timeout in executor is the hard limit.
     max_turns=100,
 )

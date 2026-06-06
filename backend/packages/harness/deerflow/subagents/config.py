@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+# [DL-NOTE] TYPE_CHECKING guard avoids a runtime circular import; AppConfig is imported lazily inside resolve_subagent_model_name.
 if TYPE_CHECKING:
     from deerflow.config.app_config import AppConfig
 
@@ -28,8 +29,11 @@ class SubagentConfig:
     description: str
     system_prompt: str | None = None
     tools: list[str] | None = None
+    # [DL-INSIGHT] Blocks "task" by default — prevents subagents from spawning further subagents (no recursive delegation).
     disallowed_tools: list[str] | None = field(default_factory=lambda: ["task"])
+    # [DL-NOTE] Three states: None = inherit all enabled skills; [] = load no skills; ["x"] = load only "x".
     skills: list[str] | None = None
+    # [DL-NOTE] Uses sentinel string "inherit" (not None) so the field is always a valid str — avoids Optional handling downstream.
     model: str = "inherit"
     max_turns: int = 50
     timeout_seconds: int = 900
@@ -41,6 +45,7 @@ def _default_model_name(app_config: "AppConfig") -> str:
     return app_config.models[0].name
 
 
+# [DL-INSIGHT] Three-level cascade: explicit model in config → parent (lead agent) model → first global model from app config.
 def resolve_subagent_model_name(config: SubagentConfig, parent_model: str | None, *, app_config: "AppConfig | None" = None) -> str:
     """Resolve the effective model name a subagent should use."""
     if config.model != "inherit":
