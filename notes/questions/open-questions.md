@@ -168,3 +168,19 @@ Running log of unresolved questions across all study sections.
 - **`ai_messages` dict-equality fallback performance**: When an `AIMessage` has no `id`
   field, deduplication falls back to `message_dict in ai_messages` (full dict equality).
   For a 100-turn subagent with large messages, this is O(n×m) per chunk.
+
+---
+
+## Section 12 — Backend: Tools System (Phase 3 — tool_search.py)
+
+- **Regex score tie-breaking is registration order**: `DeferredToolRegistry.search()` uses `scored.sort(key=lambda x: x[0], reverse=True)` — Python's stable sort preserves insertion order within the same score bucket. Is relying on MCP tool registration order as a tiebreaker intentional, or should ties be broken alphabetically?
+- **`convert_to_openai_function` model-agnosticism**: The tool serializes matched tools to OpenAI function-call format via `langchain_core.utils.function_calling.convert_to_openai_function`. For models that natively use Anthropic tool format (e.g. Claude via `langchain_anthropic`), does LangChain's `bind_tools` transparently translate this, or could the JSON shape mismatch cause silent schema errors?
+- **`reset_deferred_registry` is only safe between runs**: In production code, no call site calls `reset_deferred_registry()` — only test fixtures do. If a future feature needs to reset mid-run (e.g. hot-reload of MCP config), the ContextVar isolation guarantee must be re-evaluated against issue #2884.
+
+---
+
+## Section 12 — Backend: Tools System (Phase 3 — invoke_acp_agent_tool.py)
+
+- **`proc` is unpacked but never used**: `spawn_agent_process` yields `(conn, proc)` but `proc` is never referenced inside the `async with` block. Is it available for sending SIGTERM on a manual timeout? The async context manager owns the process lifetime, but explicit cancellation hooks may be needed for long-running ACP agents.
+- **No timeout on `conn.prompt()`**: The ACP `prompt()` call has no explicit timeout. A misbehaving ACP agent (or a long coding task) could block indefinitely. Is there a timeout at the ACP protocol level, or does the outer LangGraph run timeout apply here?
+- **MCP passthrough format mismatch risk**: `_build_acp_mcp_servers()` converts DeerFlow's name→config dict into ACP's list-with-`name` field format. If the ACP protocol version bumps and renames fields (e.g., `type` → `transport`), this conversion silently produces invalid payloads. Is there an ACP version check?

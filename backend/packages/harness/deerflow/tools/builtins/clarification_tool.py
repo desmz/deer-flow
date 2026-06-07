@@ -3,6 +3,9 @@ from typing import Literal
 from langchain.tools import tool
 
 
+# [DL-INSIGHT] parse_docstring=True builds the JSON schema from the Google-style Args: section
+# return_direct=True: The agent stops looping and returns the tool’s output as the final response, bypassing any additional model call.
+# If the model calls multiple tools in a single turn, return_direct takes effect only when all called tools have return_direct=True.
 @tool("ask_clarification", parse_docstring=True, return_direct=True)
 def ask_clarification_tool(
     question: str,

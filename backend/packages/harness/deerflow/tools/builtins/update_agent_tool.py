@@ -33,6 +33,8 @@ from deerflow.tools.types import Runtime
 logger = logging.getLogger(__name__)
 
 
+# [DL-INSIGHT] Two-phase atomic commit pattern: stage all files into temp siblings, then
+# rename them into place. SOUL.md and config.yaml are never in a partially-updated state.
 def _stage_temp(path: Path, text: str) -> Path:
     """Write ``text`` into a sibling temp file and return its path.
 
@@ -40,6 +42,8 @@ def _stage_temp(path: Path, text: str) -> Path:
     once every staged file is ready, or for unlinking it on failure.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    # [DL-NOTE] dir=path.parent keeps temp on same filesystem → Path.replace() is a rename
+    # (atomic on POSIX/NTFS), not a cross-device copy that could leave partial content.
     fd = tempfile.NamedTemporaryFile(
         mode="w",
         dir=path.parent,
@@ -53,6 +57,7 @@ def _stage_temp(path: Path, text: str) -> Path:
         fd.close()
         return Path(fd.name)
     except BaseException:
+        # [DL-NOTE] BaseException (not Exception) ensures cleanup on KeyboardInterrupt/SystemExit too.
         fd.close()
         Path(fd.name).unlink(missing_ok=True)
         raise
@@ -129,11 +134,16 @@ def update_agent(
     # Reject an unknown ``model`` *before* touching the filesystem. Otherwise
     # ``_resolve_model_name`` silently falls back to the default at runtime
     # and the user sees confusing repeated warnings on every later turn.
+    # [DL-INSIGHT] Validate model name before touching the filesystem. Without this guard,
+    # _resolve_model_name silently falls back to the default and the user sees confusing
+    # repeated warnings on every subsequent turn (issue #2782 class).
     if model is not None and get_app_config().get_model_config(model) is None:
         return _err(f"Unknown model '{model}'. Pass a model name that exists in config.yaml's models section.")
 
     paths = get_paths()
     agent_dir = paths.user_agent_dir(user_id, agent_name)
+    # [DL-NOTE] Guards against silently updating a legacy shared-layout agent (pre-user-isolation).
+    # Refuses the write and directs the user to the migration script instead.
     if not agent_dir.exists() and paths.agent_dir(agent_name).exists():
         return _err(f"Agent '{agent_name}' only exists in the legacy shared layout and is not scoped to a user. Run scripts/migrate_user_isolation.py to move legacy agents into the per-user layout before updating.")
 
@@ -149,8 +159,8 @@ def update_agent(
 
     updated_fields: list[str] = []
 
-    # Force the on-disk ``name`` to match the directory we are writing into,
-    # even if ``existing_cfg.name`` had drifted (e.g. from manual yaml edits).
+    # [DL-NOTE] Forces config_data["name"] = agent_name so directory name and YAML stay
+    # in sync even if the file was manually edited to a different name.
     config_data: dict[str, Any] = {"name": agent_name}
     new_description = description if description is not None else existing_cfg.description
     config_data["description"] = new_description
@@ -200,11 +210,9 @@ def update_agent(
             pending.append((soul_tmp, soul_target))
             updated_fields.append("soul")
 
-        # Commit phase. ``Path.replace`` is atomic per file on POSIX/NTFS and
-        # the staging step above means any earlier failure has already been
-        # reported. The remaining failure mode is a crash *between* two
-        # ``replace`` calls, which is reported via the partial-write error
-        # branch below so the caller knows which files are now on disk.
+        # [DL-WARN] Commit phase: each Path.replace() is atomic, but two calls are not
+        # atomic together. A crash between the two leaves one file updated and one stale.
+        # The partial-write error branch below reports exactly which files were committed.
         committed: list[Path] = []
         try:
             for tmp, target in pending:

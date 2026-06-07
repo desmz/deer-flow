@@ -43,8 +43,8 @@ def merge_viewed_images(existing: dict[str, ViewedImageData] | None, new: dict[s
     if new is None:
         return existing
     # Special case: empty dict means clear all viewed images
-    # [DL-INSIGHT] {} is a deliberate in-band clear signal. ViewImageMiddleware returns viewed_images={}
-    # after injecting images into the model call, so base64 blobs don't accumulate across turns.
+    # [DL-INSIGHT] {} is the supported in-band clear signal, but ViewImageMiddleware does NOT use it.
+    # The middleware deduplicates via message-content substring search instead; viewed_images accumulates.
     if len(new) == 0:
         return {}
     # Merge dictionaries, new values override existing ones for same keys

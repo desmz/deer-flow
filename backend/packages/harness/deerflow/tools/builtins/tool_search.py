@@ -21,6 +21,7 @@ from langchain_core.utils.function_calling import convert_to_openai_function
 
 logger = logging.getLogger(__name__)
 
+# [DL-NOTE] Hard ceiling of 5 results — prevents context bloat when broad regex queries match dozens of MCP tools at once.
 MAX_RESULTS = 5  # Max tools returned per search
 
 
@@ -68,6 +69,8 @@ class DeferredToolRegistry:
         if promoted:
             logger.debug(f"Promoted {promoted} tool(s) from deferred to active: {names}")
 
+    # [DL-INSIGHT] The three-form query language (select:, +required, regex) directly mirrors
+    # Claude Code's ToolSearch interface — same contract, same query patterns.
     def search(self, query: str) -> list[BaseTool]:
         """Search deferred tools by regex pattern against name + description.
 
@@ -98,6 +101,8 @@ class DeferredToolRegistry:
         try:
             regex = re.compile(query, re.IGNORECASE)
         except re.error:
+            # [DL-NOTE] Silently degrades malformed regex to literal match so the agent can safely
+            # pass tool names containing special chars like '.' or '(' without raising.
             regex = re.compile(re.escape(query), re.IGNORECASE)
 
         scored = []
@@ -159,6 +164,8 @@ def set_deferred_registry(registry: DeferredToolRegistry) -> None:
     _registry_var.set(registry)
 
 
+# [DL-WARN] Only safe to call between graph runs. Calling inside an active run (e.g. on subagent
+# spawn) wipes parent-agent promotions — the root cause of issue #2884.
 def reset_deferred_registry() -> None:
     """Reset the deferred registry for the current async context."""
     _registry_var.set(None)

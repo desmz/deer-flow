@@ -484,10 +484,45 @@ Phase 2 — Execution and builtins (runtime and built-in agent implementations):
 
 **Key files:**
 
-| Path                                       | Status | Notes                                                   |
-| ------------------------------------------ | ------ | ------------------------------------------------------- |
-| `backend/packages/harness/deerflow/tools/` | `[ ]`  | Tool types, registry, sync, skill manage tool, builtins |
-| `backend/tests/test_tool_*.py`             | `[ ]`  | Tools unit tests (glob pattern)                         |
+| Path                                                                        | Status | Notes                                                                                |
+| --------------------------------------------------------------------------- | ------ | ------------------------------------------------------------------------------------ |
+| `backend/packages/harness/deerflow/tools/__init__.py`                       | `[x]`  | Package public API exports                                                           |
+| `backend/packages/harness/deerflow/tools/types.py`                          | `[x]`  | ToolDef and ToolResult abstractions                                                  |
+| `backend/packages/harness/deerflow/tools/tools.py`                          | `[x]`  | Tools registry; assembles the per-run tool set with deduplication                    |
+| `backend/packages/harness/deerflow/tools/sync.py`                           | `[x]`  | Keeps tools in sync with config and skill changes                                    |
+| `backend/packages/harness/deerflow/tools/skill_manage_tool.py`              | `[x]`  | Built-in tool for listing, enabling, and disabling skills                            |
+| `backend/packages/harness/deerflow/tools/builtins/clarification_tool.py`    | `[x]`  | `ask_clarification` tool — prompts for input; intercepted by ClarificationMiddleware |
+| `backend/packages/harness/deerflow/tools/builtins/present_file_tool.py`     | `[x]`  | `present_files` tool — surfaces sandbox files to the user                            |
+| `backend/packages/harness/deerflow/tools/builtins/view_image_tool.py`       | `[x]`  | `view_image` tool — loads an image for model inspection                              |
+| `backend/packages/harness/deerflow/tools/builtins/task_tool.py`             | `[x]`  | Task management tool; create and update tasks within a thread                        |
+| `backend/packages/harness/deerflow/tools/builtins/tool_search.py`           | `[x]`  | Semantic tool search for dynamic tool discovery                                      |
+| `backend/packages/harness/deerflow/tools/builtins/invoke_acp_agent_tool.py` | `[x]`  | Invokes an ACP agent as a tool call; integrates with the ACP config layer            |
+| `backend/packages/harness/deerflow/tools/builtins/setup_agent_tool.py`      | `[x]`  | Tool for creating and configuring custom agents                                      |
+| `backend/packages/harness/deerflow/tools/builtins/update_agent_tool.py`     | `[x]`  | Tool for updating existing custom agent definitions                                  |
+
+**Study order:**
+
+Phase 1 — Primitives (data shapes and package API, read first so type names are familiar):
+
+1. `tools/types.py` — ToolDef and ToolResult abstractions; read first so the type vocabulary is clear before reading any registry or tool implementation
+2. `tools/__init__.py` — package public exports; confirms what callers outside the package see
+
+Phase 2 — Registry and sync (how tools are assembled per-run):
+
+1. `tools/tools.py` — tools registry; the per-run tool assembly logic including deduplication; depends on types.py
+2. `tools/sync.py` — keeps tool state in sync with config changes; depends on tools.py
+3. `tools/skill_manage_tool.py` — built-in tool for listing/enabling/disabling skills; a tool that manages other tools
+
+Phase 3 — Built-in tools (concrete tool implementations; read in ascending complexity):
+
+1. `tools/builtins/clarification_tool.py` — `ask_clarification`; the simplest built-in; read first to see the tool construction pattern
+2. `tools/builtins/present_file_tool.py` — `present_files`; surfaces sandbox files to the user
+3. `tools/builtins/view_image_tool.py` — `view_image`; loads base64 images into the model context
+4. `tools/builtins/task_tool.py` — task management within a thread
+5. `tools/builtins/tool_search.py` — semantic tool search for dynamic tool discovery
+6. `tools/builtins/invoke_acp_agent_tool.py` — invokes an ACP agent as a tool call; read after task_tool.py since both follow the async invocation pattern
+7. `tools/builtins/setup_agent_tool.py` — creates and configures custom agents
+8. `tools/builtins/update_agent_tool.py` — updates existing custom agent definitions; read after setup_agent_tool.py as they share the same pattern
 
 ---
 
@@ -944,7 +979,7 @@ Phase 2 — Execution and builtins (runtime and built-in agent implementations):
 | 09      | Backend: Middleware Pipeline     | [x]    | `modules/09a-middleware-pipeline-overview.md` (assembly), `modules/09b-before-agent-middlewares.md` (phase 2), `modules/09c-model-call-wrappers.md` (phase 3), `modules/09d-tool-call-wrappers.md` (phase 4), `modules/09e-before-model-middlewares.md` (phase 5), `modules/09f-after-model-middlewares.md` (phase 6), `modules/09g-after-agent-middlewares.md` (phase 7) |
 | 10      | Backend: Memory System           | [x]    | `modules/10-memory-system.md`                                                                                                                                                                                                                                                                                                                                             |
 | 11      | Backend: Subagents               | [x]    | `modules/11a-subagents-primitives.md` (phase 1: config, token_collector, registry), `modules/11b-subagents-builtins-executor.md` (phase 2: builtins, executor, background task lifecycle)                                                                                                                                                                                 |
-| 12      | Backend: Tools System            | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
+| 12      | Backend: Tools System            | [x]    | `modules/12a-tools-primitives-registry.md` (phases 1–2), `modules/12b-tools-builtins.md` (phase 3: clarification, present_files, view_image, task), `modules/12c-tools-agent-builtins.md` (phase 3: tool_search, invoke_acp_agent, setup_agent, update_agent)                                                                                                           |
 | 13      | Backend: Skills System           | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
 | 14      | Backend: MCP Integration         | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
 | 15      | Backend: Sandbox                 | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |

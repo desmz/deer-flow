@@ -17,6 +17,8 @@ class _InvokeACPAgentInput(BaseModel):
     prompt: str = Field(description="The concise task prompt to send to the agent")
 
 
+# [DL-INSIGHT] Per-thread workspace isolation mirrors the sandbox pattern — concurrent ACP
+# runs can't clobber each other's output files. Lead agent reads results at /mnt/acp-workspace/.
 def _get_work_dir(thread_id: str | None) -> str:
     """Get the per-thread ACP workspace directory.
 
@@ -58,6 +60,8 @@ def _build_mcp_servers() -> dict[str, dict[str, Any]]:
     return build_servers_config(ExtensionsConfig.from_file())
 
 
+# [DL-NOTE] DeerFlow forwards its own MCP server config to the ACP agent, so the child agent
+# can use the same tools (e.g. web search) that the lead agent has configured.
 def _build_acp_mcp_servers() -> list[dict[str, Any]]:
     """Build ACP ``mcpServers`` payload for ``new_session``.
 
@@ -94,6 +98,8 @@ def _build_acp_mcp_servers() -> list[dict[str, Any]]:
     return mcp_servers
 
 
+# [DL-INSIGHT] ACP's permission model lets agents ask before executing privileged ops.
+# DeerFlow can auto-approve (prefers allow_once > allow_always) or deny — never blocking on user input.
 def _build_permission_response(options: list[Any], *, auto_approve: bool) -> Any:
     """Build an ACP permission response.
 
@@ -136,6 +142,8 @@ def _format_invocation_error(agent: str, cmd: str, exc: Exception) -> str:
     return f"{message} Install the agent binary or update `acp_agents.{agent}.command` in config.yaml."
 
 
+# [DL-INSIGHT] Dynamic description bakes the available agent list into the tool's own docstring
+# at construction time — the LLM knows which agents exist without a separate discovery call.
 def build_invoke_acp_agent_tool(agents: dict) -> BaseTool:
     """Create the ``invoke_acp_agent`` tool with a description generated from configured agents.
 
@@ -162,6 +170,8 @@ def build_invoke_acp_agent_tool(agents: dict) -> BaseTool:
     # Capture agents in closure so the function can reference it
     _agents = dict(agents)
 
+    # [DL-NOTE] InjectedToolArg strips `config` from the model-facing schema — the LLM never
+    # sees this parameter. LangChain injects the live RunnableConfig at execution time.
     async def _invoke(agent: str, prompt: str, config: Annotated[RunnableConfig, InjectedToolArg] = None) -> str:
         logger.info("Invoking ACP agent %s (prompt length: %d)", agent, len(prompt))
         logger.debug("Invoking ACP agent %s with prompt: %.200s%s", agent, prompt, "..." if len(prompt) > 200 else "")
@@ -221,11 +231,15 @@ def build_invoke_acp_agent_tool(agents: dict) -> BaseTool:
             mcp_servers = []
         agent_env: dict[str, str] | None = None
         if agent_config.env:
+            # [DL-NOTE] $VAR values are resolved from the host environment — credentials can be
+            # passed through without hardcoding them in config.yaml.
             agent_env = {k: (os.environ.get(v[1:], "") if v.startswith("$") else v) for k, v in agent_config.env.items()}
 
         try:
             from acp import spawn_agent_process
 
+            # [DL-QUESTION] `proc` is unpacked but never used — is it available for SIGTERM on timeout?
+            # Process lifetime is managed by the async context manager; no explicit timeout on conn.prompt().
             async with spawn_agent_process(client, cmd, *args, env=agent_env, cwd=physical_cwd) as (conn, proc):
                 logger.info("Spawning ACP agent '%s' with command '%s' and args %s in cwd %s", agent, cmd, args, physical_cwd)
                 await conn.initialize(

@@ -19,6 +19,8 @@ from deerflow.tools.types import Runtime
 
 logger = logging.getLogger(__name__)
 
+# [DL-NOTE] WeakValueDictionary: locks are GC'd when no coroutine holds a reference,
+# preventing unbounded lock accumulation for skills that are no longer being modified.
 _skill_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
 
@@ -50,6 +52,8 @@ def _history_record(*, action: str, file_path: str, prev_content: str | None, ne
     }
 
 
+# [DL-NOTE] Two-tier security gate: non-executables only need "not block"; scripts/ paths
+# require an explicit "allow" — stricter because they can run arbitrary commands.
 async def _scan_or_raise(content: str, *, executable: bool, location: str) -> dict[str, str]:
     result = await scan_skill_content(content, executable=executable, location=location)
     if result.decision == "block":
@@ -85,6 +89,8 @@ async def _skill_manage_impl(
         expected_count: Optional expected number of replacements for patch.
     """
     name = SkillStorage.validate_skill_name(name)
+    # [DL-NOTE] Per-skill async lock: prevents two concurrent agent turns from writing
+    # the same skill simultaneously. Coarse-grained — covers all actions for one skill name.
     lock = _get_lock(name)
     thread_id = _get_thread_id(runtime)
     skill_storage = get_or_new_skill_storage()
@@ -103,6 +109,8 @@ async def _skill_manage_impl(
                 name,
                 _history_record(action="create", file_path=SKILL_MD_FILE, prev_content=None, new_content=content, thread_id=thread_id, scanner=scan),
             )
+            # [DL-INSIGHT] Every mutation immediately refreshes the skills prompt cache so the
+            # agent's next model call sees the updated skill list without a process restart.
             await refresh_skills_system_prompt_cache_async()
             return f"Created custom skill '{name}'."
 
@@ -235,4 +243,6 @@ async def skill_manage_tool(
     )
 
 
+# [DL-NOTE] Sync wrapper targets _skill_manage_impl (raw async impl), not the decorated
+# skill_manage_tool, to avoid double-dispatch through LangChain's @tool machinery.
 skill_manage_tool.func = make_sync_tool_wrapper(_skill_manage_impl, "skill_manage")

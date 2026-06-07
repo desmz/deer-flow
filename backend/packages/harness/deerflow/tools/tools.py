@@ -12,6 +12,8 @@ from deerflow.tools.sync import make_sync_tool_wrapper
 
 logger = logging.getLogger(__name__)
 
+# [DL-NOTE] Always-included built-ins; no config gate. skill_manage_tool, task_tool, and
+# view_image_tool are added conditionally inside get_available_tools() below.
 BUILTIN_TOOLS = [
     present_file_tool,
     ask_clarification_tool,
@@ -23,6 +25,8 @@ SUBAGENT_TOOLS = [
 ]
 
 
+# [DL-NOTE] Detects host-bash by group OR by use-path — catches renamed aliases like "shell"
+# with group="bash" (see test_get_available_tools_hides_renamed_host_bash_alias).
 def _is_host_bash_tool(tool: object) -> bool:
     """Return True if the tool config represents a host-bash execution surface."""
     group = getattr(tool, "group", None)
@@ -34,6 +38,8 @@ def _is_host_bash_tool(tool: object) -> bool:
     return False
 
 
+# [DL-NOTE] Community tools (Tavily, Jina, etc.) are often async-only. Attaching a sync
+# wrapper lets sync callers (e.g. DeerFlowClient) invoke them without a running event loop.
 def _ensure_sync_invocable_tool(tool: BaseTool) -> BaseTool:
     """Attach a sync wrapper to async-only tools used by sync agent callers."""
     if getattr(tool, "func", None) is None and getattr(tool, "coroutine", None) is not None:
@@ -63,6 +69,8 @@ def get_available_tools(
     Returns:
         List of available tools.
     """
+    # [DL-NOTE] Assembly order: config-loaded tools → builtins → MCP → ACP tools.
+    # Deduplication by name at the end keeps the first occurrence; config-loaded tools win.
     config = app_config or get_app_config()
     tool_configs = [tool for tool in config.tools if groups is None or tool.group in groups]
 
@@ -121,6 +129,8 @@ def get_available_tools(
             from deerflow.config.extensions_config import ExtensionsConfig
             from deerflow.mcp.cache import get_cached_mcp_tools
 
+            # [DL-INSIGHT] Reads MCP config directly from disk (not config.extensions) so that
+            # Gateway API writes to extensions_config.json are visible without a process restart.
             extensions_config = ExtensionsConfig.from_file()
             if extensions_config.get_enabled_mcp_servers():
                 mcp_tools = get_cached_mcp_tools()
@@ -165,6 +175,9 @@ def get_available_tools(
                         # mis-classify those promotions as new tools and
                         # re-register them as deferred — exactly the bug
                         # this fix exists to prevent.
+                        # [DL-INSIGHT] Re-entry guard (issue #2884): subagent spawning calls
+                        # get_available_tools again; preserving the existing registry keeps the
+                        # parent agent's promoted MCP tools promoted instead of re-deferring them.
                         existing_registry = get_deferred_registry()
                         if existing_registry is None:
                             registry = DeferredToolRegistry()

@@ -11,6 +11,8 @@ from deerflow.agents.thread_state import ThreadDataState
 from deerflow.config.paths import VIRTUAL_PATH_PREFIX
 from deerflow.tools.types import Runtime
 
+# [DL-INSIGHT] Broader than present_files (outputs only) — view_image needs workspace + uploads
+# too so the agent can inspect input images (e.g. an uploaded photo) before deciding what to do.
 _ALLOWED_IMAGE_VIRTUAL_ROOTS = (
     f"{VIRTUAL_PATH_PREFIX}/workspace",
     f"{VIRTUAL_PATH_PREFIX}/uploads",
@@ -66,6 +68,8 @@ def view_image_tool(
     Args:
         image_path: Absolute /mnt/user-data virtual path to the image file. Common formats supported: jpg, jpeg, png, webp.
     """
+    # [DL-NOTE] Deferred imports: sandbox modules are heavy and create import-time side effects;
+    # loading them only when the tool is actually called avoids circular imports at module level.
     from deerflow.sandbox.exceptions import SandboxRuntimeError
     from deerflow.sandbox.tools import (
         get_thread_data,
@@ -141,6 +145,8 @@ def view_image_tool(
             update={"messages": [ToolMessage(f"Error reading image file: {_sanitize_image_error(e, thread_data)}", tool_call_id=tool_call_id)]},
         )
 
+    # [DL-INSIGHT] Two-layer MIME check: extension lookup first, then magic-byte sniffing after read.
+    # Both must agree — catches extension spoofing (e.g. a PDF renamed to .png).
     detected_mime_type = _detect_image_mime(image_data)
     if detected_mime_type is None:
         return Command(
@@ -153,8 +159,9 @@ def view_image_tool(
     mime_type = detected_mime_type
     image_base64 = base64.b64encode(image_data).decode("utf-8")
 
-    # Update viewed_images in state
-    # The merge_viewed_images reducer will handle merging with existing images
+    # [DL-NOTE] viewed_images accumulates across the conversation (never cleared by the middleware).
+    # ViewImageMiddleware.before_model injects all stored images as a HumanMessage before each LLM call;
+    # re-injection is blocked by a "Here are the images you've viewed" substring check on prior messages.
     new_viewed_images = {image_path: {"base64": image_base64, "mime_type": mime_type}}
 
     return Command(

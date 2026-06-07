@@ -26,8 +26,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Cache subagent token usage by tool_call_id so TokenUsageMiddleware can
-# write it back to the triggering AIMessage's usage_metadata.
+# [DL-INSIGHT] Cross-boundary token accounting: subagent usage is captured here by tool_call_id
+# so TokenUsageMiddleware (in the parent agent) can pop it and write it back to the triggering
+# AIMessage's usage_metadata. Without this, subagent LLM calls would be invisible to the parent.
 _subagent_usage_cache: dict[str, dict[str, int]] = {}
 
 
@@ -155,6 +156,9 @@ def _get_runtime_app_config(runtime: Any) -> "AppConfig | None":
     return None
 
 
+# [DL-INSIGHT] Skill scope inheritance: parent's allowlist bounds the child's.
+# If the parent is restricted to ["skill_a"], the child cannot see skills outside that set
+# regardless of what its own config specifies. Parent=None means unrestricted.
 def _merge_skill_allowlists(parent: list[str] | None, child: list[str] | None) -> list[str] | None:
     """Return the effective subagent skill allowlist under the parent policy."""
     if parent is None:
@@ -270,7 +274,8 @@ async def task_tool(
         resolved_app_config = get_app_config()
     effective_model = resolve_subagent_model_name(config, parent_model, app_config=resolved_app_config)
 
-    # Subagents should not have subagent tools enabled (prevent recursive nesting)
+    # [DL-WARN] subagent_enabled=False is the recursion guard: child agents never receive the
+    # task tool, so lead→subagent→subagent nesting is structurally impossible.
     available_tools_kwargs = {
         "model_name": effective_model,
         "groups": parent_tool_groups,
@@ -294,8 +299,8 @@ async def task_tool(
         executor_kwargs["app_config"] = resolved_app_config
     executor = SubagentExecutor(**executor_kwargs)
 
-    # Start background execution (always async to prevent blocking)
-    # Use tool_call_id as task_id for better traceability
+    # [DL-NOTE] tool_call_id doubles as task_id: SSE events (task_started/completed) carry this ID
+    # so the frontend can correlate them to the exact tool call the user's thread triggered.
     task_id = executor.execute_async(prompt, task_id=tool_call_id)
 
     # Poll for task completion in backend (removes need for LLM to poll)
@@ -395,7 +400,9 @@ async def task_tool(
                 writer({"type": "task_timed_out", "task_id": task_id, "usage": usage})
                 return f"Task polling timed out after {timeout_minutes} minutes. This may indicate the background task is stuck. Status: {result.status.value}"
     except asyncio.CancelledError:
-        # Signal the background subagent thread to stop cooperatively.
+        # [DL-INSIGHT] Graceful cancellation: user hits stop → LangGraph cancels this coroutine →
+        # CancelledError lands here. We signal the background thread, then asyncio.shield() the
+        # final-usage wait so a second cancellation can't interrupt token reporting before re-raise.
         request_cancel_background_task(task_id)
 
         # Wait (shielded) for the subagent to reach a terminal state so the

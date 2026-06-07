@@ -30,6 +30,8 @@ def _get_thread_id(runtime: Runtime) -> str | None:
         return None
 
 
+# [DL-INSIGHT] Security gate as much as normalizer — Path.relative_to(outputs_dir) rejects anything
+# outside /mnt/user-data/outputs, preventing the agent from leaking workspace/uploads paths to the UI.
 def _normalize_presented_filepath(
     runtime: Runtime,
     filepath: str,
@@ -84,6 +86,8 @@ def _normalize_presented_filepath(
 def present_file_tool(
     runtime: Runtime,
     filepaths: list[str],
+    # [DL-NOTE] InjectedToolCallId is stripped from the LLM-visible schema — the model never sees
+    # or fills this arg; LangChain auto-injects it from the tool call's ID at dispatch time.
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
     """Make files visible to the user for viewing and rendering in the client interface.
@@ -112,7 +116,9 @@ def present_file_tool(
             update={"messages": [ToolMessage(f"Error: {exc}", tool_call_id=tool_call_id)]},
         )
 
-    # The merge_artifacts reducer will handle merging and deduplication
+    # [DL-INSIGHT] Returning Command (not a plain string) lets the tool write to multiple state
+    # fields at once: "artifacts" (picked up by the frontend renderer) + the ToolMessage reply.
+    # The merge_artifacts reducer handles deduplication if the same file is presented twice.
     return Command(
         update={
             "artifacts": normalized_paths,

@@ -13,6 +13,8 @@ from deerflow.tools.types import Runtime
 logger = logging.getLogger(__name__)
 
 
+# [DL-INSIGHT] Bootstrap-only tool: added to the tool list exclusively when is_bootstrap=True in
+# RunnableConfig.configurable (see make_lead_agent). Normal agent runs never see this tool.
 @tool(parse_docstring=True)
 def setup_agent(
     soul: str,
@@ -28,6 +30,7 @@ def setup_agent(
         skills: Optional list of skill names this agent should use. None means use all enabled skills, empty list means no skills.
     """
 
+    # [DL-NOTE] agent_name injected via RunnableConfig.configurable["agent_name"]; None means default agent.
     agent_name: str | None = runtime.context.get("agent_name") if runtime.context else None
     agent_dir = None
     is_new_dir = False
@@ -38,6 +41,8 @@ def setup_agent(
         if agent_name:
             # Custom agents are persisted under the current user's bucket so
             # different users do not see each other's agents.
+            # [DL-INSIGHT] resolve_runtime_user_id checks runtime.context["user_id"] first — the
+            # only user_id channel that survives thread-pool and timer boundaries.
             user_id = resolve_runtime_user_id(runtime)
             agent_dir = paths.user_agent_dir(user_id, agent_name)
         else:
@@ -62,6 +67,8 @@ def setup_agent(
         soul_file.write_text(soul, encoding="utf-8")
 
         logger.info(f"[agent_creator] Created agent '{agent_name}' at {agent_dir}")
+        # [DL-QUESTION] `created_agent_name` is written to LangGraph state but no Python or
+        # frontend consumer reads it. It may be a vestigial debugging field or a future hook.
         return Command(
             update={
                 "created_agent_name": agent_name,
@@ -73,7 +80,8 @@ def setup_agent(
         import shutil
 
         if agent_name and is_new_dir and agent_dir is not None and agent_dir.exists():
-            # Cleanup the custom agent directory only if it was newly created during this call
+            # [DL-NOTE] Atomic cleanup: only removes the dir if this call created it, preventing
+            # partial agent directories on failure (is_new_dir guards against deleting pre-existing agents).
             shutil.rmtree(agent_dir)
         logger.error(f"[agent_creator] Failed to create agent '{agent_name}': {e}", exc_info=True)
         return Command(update={"messages": [ToolMessage(content=f"Error: {e}", tool_call_id=runtime.tool_call_id)]})
