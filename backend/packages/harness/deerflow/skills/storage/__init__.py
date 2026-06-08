@@ -9,6 +9,8 @@ from deerflow.skills.storage.local_skill_storage import LocalSkillStorage
 from deerflow.skills.storage.skill_storage import SkillStorage
 
 _default_skill_storage: SkillStorage | None = None
+# [DL-NOTE] Stores the AppConfig *object identity* (not value) the singleton was built from.
+# When get_app_config() returns a new object after a hot-reload, `is not` detects it and rebuilds.
 _default_skill_storage_config: object | None = None  # AppConfig identity the singleton was built from
 
 
@@ -30,6 +32,8 @@ def get_or_new_skill_storage(**kwargs) -> SkillStorage:
     from deerflow.config import get_app_config
     from deerflow.config.skills_config import SkillsConfig
 
+    # [DL-INSIGHT] Reflection-based factory: `skills_config.use` is a dotted class path resolved by resolve_class().
+    # Changing it in config.yaml swaps the storage backend without code changes — same pattern as `sandbox.use`.
     def _make_storage(skills_config: SkillsConfig, *, host_path: str | None = None, **kwargs) -> SkillStorage:
         from deerflow.reflection import resolve_class
 
@@ -58,10 +62,13 @@ def get_or_new_skill_storage(**kwargs) -> SkillStorage:
     # If the singleton was manually injected (e.g. in tests) without a config
     # identity (_default_skill_storage_config is None), skip get_app_config()
     # entirely to avoid requiring a config.yaml on disk.
+    # [DL-NOTE] Test injection bypass: assign _default_skill_storage directly with no _config to skip config.yaml.
     if _default_skill_storage is not None and _default_skill_storage_config is None:
         return _default_skill_storage
 
     app_config_now = get_app_config()
+    # [DL-NOTE] `is not` (identity, not equality) — get_app_config() returns a new object on hot-reload,
+    # which triggers a fresh storage build so path changes in config.yaml are picked up without restart.
     if _default_skill_storage is None or _default_skill_storage_config is not app_config_now:
         _default_skill_storage = _make_storage(app_config_now.skills, **kwargs)
         _default_skill_storage_config = app_config_now

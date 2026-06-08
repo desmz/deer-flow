@@ -15,12 +15,17 @@ from deerflow.skills.types import SKILL_MD_FILE
 logger = logging.getLogger(__name__)
 
 
+# [DL-NOTE] slots=True: reduces per-instance memory and speeds attribute access — fitting for a value object
+# created once per file scanned during an install.
 @dataclass(slots=True)
 class ScanResult:
     decision: str
     reason: str
 
 
+# [DL-INSIGHT] LLMs often wrap JSON in prose ("Sure, here is the result: {...}").
+# This helper tries clean JSON first, then falls back to regex extraction so the
+# caller doesn't need to handle model verbosity specially.
 def _extract_json_object(raw: str) -> dict | None:
     raw = raw.strip()
     try:
@@ -37,6 +42,9 @@ def _extract_json_object(raw: str) -> dict | None:
         return None
 
 
+# [DL-INSIGHT] LLM-as-security-judge: rather than static pattern matching, an AI model
+# evaluates skill content for prompt injection, privilege escalation, and exfiltration.
+# Trade-off: flexible but non-deterministic — fail-closed fallback is the safety net.
 async def scan_skill_content(content: str, *, executable: bool = False, location: str = SKILL_MD_FILE, app_config: AppConfig | None = None) -> ScanResult:
     """Screen skill content before it is written to disk."""
     rubric = (
@@ -51,6 +59,8 @@ async def scan_skill_content(content: str, *, executable: bool = False, location
     try:
         config = app_config or get_app_config()
         model_name = config.skill_evolution.moderation_model_name
+        # [DL-NOTE] moderation_model_name=None falls back to the default model — any configured LLM doubles
+        # as the security judge, which means scan quality varies with model capability.
         model = create_chat_model(name=model_name, thinking_enabled=False, app_config=config) if model_name else create_chat_model(thinking_enabled=False, app_config=config)
         response = await model.ainvoke(
             [
@@ -65,6 +75,8 @@ async def scan_skill_content(content: str, *, executable: bool = False, location
     except Exception:
         logger.warning("Skill security scan model call failed; using conservative fallback", exc_info=True)
 
+    # [DL-WARN] Fail-closed: any model failure → block, regardless of actual content.
+    # executable=True gets a more alarming message but the outcome is identical (blocked either way).
     if executable:
         return ScanResult("block", "Security scan unavailable for executable content; manual review required.")
     return ScanResult("block", "Security scan unavailable for skill content; manual review required.")

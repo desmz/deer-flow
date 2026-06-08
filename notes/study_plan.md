@@ -531,24 +531,64 @@ Phase 3 — Built-in tools (concrete tool implementations; read in ascending com
 **Goal:** Understand the extensible skills layer (DeerFlow's plugin system).
 
 - Skills as YAML-defined tool wrappers — what a skill looks like
+- Skill types (`skills/types.py`) — data shapes for skill definitions
 - Parser (`skills/parser.py`) — how skills are read from disk
-- Installer (`skills/installer.py`) — how skills are installed/activated
+- Skill validation (`skills/validation.py`) — schema and constraint checks
 - Security scanner (`skills/security_scanner.py`) — what it checks and blocks
-- Skill validation (`skills/validation.py`)
-- Tool policy (`skills/tool_policy.py`)
+- Tool policy (`skills/tool_policy.py`) — controls tool access
+- Installer (`skills/installer.py`) — how skills are installed/activated
 - Skill storage (`skills/storage/`) — where skills live on disk
-- Skill types (`skills/types.py`)
 - Bundled skills (`skills/public/`) vs custom skills
 - Skills evolution config (`config/skill_evolution_config.py`)
 - The `extensions_config.json` wiring
 
 **Key files:**
 
-| Path                                        | Status | Notes                                                                                          |
-| ------------------------------------------- | ------ | ---------------------------------------------------------------------------------------------- |
-| `backend/packages/harness/deerflow/skills/` | `[ ]`  | Skills subsystem: parser, installer, security scanner, validation, tool policy, storage, types |
-| `skills/public/`                            | `[ ]`  | Bundled built-in skills (YAML definitions)                                                     |
-| `backend/tests/test_skills_*.py`            | `[ ]`  | Skills tests (glob pattern)                                                                    |
+| Path                                                                      | Status | Notes                                                                            |
+| ------------------------------------------------------------------------- | ------ | -------------------------------------------------------------------------------- |
+| `backend/packages/harness/deerflow/skills/__init__.py`                    | `[x]`  | Package public API exports                                                       |
+| `backend/packages/harness/deerflow/skills/types.py`                       | `[x]`  | Data shapes for skill definitions; the vocabulary used throughout the subsystem  |
+| `backend/packages/harness/deerflow/skills/parser.py`                      | `[x]`  | Reads and parses skill YAML files from disk into typed objects                   |
+| `backend/packages/harness/deerflow/skills/validation.py`                  | `[x]`  | Schema and constraint validation for skill definitions                           |
+| `backend/packages/harness/deerflow/skills/security_scanner.py`            | `[x]`  | Detects malicious or dangerous patterns in skill definitions before installation |
+| `backend/packages/harness/deerflow/skills/tool_policy.py`                 | `[x]`  | Controls which tools a skill is allowed to call; access policy enforcement       |
+| `backend/packages/harness/deerflow/skills/installer.py`                   | `[x]`  | Installs and activates skills; top-level coordinator of the install pipeline     |
+| `backend/packages/harness/deerflow/skills/storage/skill_storage.py`       | `[x]`  | Abstract storage interface for reading and writing skill records                 |
+| `backend/packages/harness/deerflow/skills/storage/local_skill_storage.py` | `[x]`  | Filesystem-based implementation of the skill storage interface                   |
+| `backend/packages/harness/deerflow/skills/storage/__init__.py`            | `[x]`  | Storage subpackage public API exports                                            |
+| `backend/packages/harness/deerflow/config/skill_evolution_config.py`      | `[x]`  | Config for skill evolution (e.g., auto-upgrade, migration settings)              |
+| `skills/public/`                                                          | `[ ]`  | Bundled built-in skills (YAML + scripts); **see deep-dive note below**           |
+
+> **Deep-dive note — `skills/public/`:** Do NOT add inline `[DL-*]` annotations to any file inside `skills/public/`. Instead, create a single markdown file at `notes/modules/13-skills-public.md`. Organise it with one **top-level heading per skill** (e.g., `## chart-visualization`) and **sub-headings per file within that skill** (e.g., `### SKILL.md`, `### scripts/generate.js`). For each entry, attach the **full content of the file** alongside the annotation so the notes file is self-contained.
+
+**Study order:**
+
+Phase 1 — Primitives (data shapes and package API, read first so type names are familiar):
+
+1. `skills/types.py` — skill data shapes; read first so the type vocabulary is clear before reading any parser or storage logic
+2. `skills/__init__.py` — package public exports; confirms what callers outside the package see
+
+Phase 2 — Storage (where skills live on disk):
+
+3. `skills/storage/skill_storage.py` — abstract storage interface; defines the CRUD contract before looking at any implementation
+4. `skills/storage/local_skill_storage.py` — filesystem-backed implementation of that interface
+5. `skills/storage/__init__.py` — storage subpackage exports
+
+Phase 3 — Core processing (parsing, validation, security):
+
+6. `skills/parser.py` — reads and parses skill YAML from disk; depends on types.py
+7. `skills/validation.py` — validates skill definitions against the schema; depends on types.py and parser.py
+8. `skills/security_scanner.py` — scans for malicious patterns; read after validation since it runs in the same pipeline
+
+Phase 4 — Activation and policy:
+
+9. `skills/tool_policy.py` — tool access policy; gates which tools an installed skill may invoke
+10. `skills/installer.py` — top-level install coordinator; ties parser, validation, security scanner, storage, and tool policy together
+11. `config/skill_evolution_config.py` — config shaping upgrade and migration behaviour
+
+Phase 5 — Bundled skills deep dive:
+
+12. `skills/public/` — read each bundled skill as a concrete, real-world example of the skill format; produce `notes/modules/13-skills-public.md` using the deep-dive note format above
 
 ---
 
@@ -979,8 +1019,8 @@ Phase 3 — Built-in tools (concrete tool implementations; read in ascending com
 | 09      | Backend: Middleware Pipeline     | [x]    | `modules/09a-middleware-pipeline-overview.md` (assembly), `modules/09b-before-agent-middlewares.md` (phase 2), `modules/09c-model-call-wrappers.md` (phase 3), `modules/09d-tool-call-wrappers.md` (phase 4), `modules/09e-before-model-middlewares.md` (phase 5), `modules/09f-after-model-middlewares.md` (phase 6), `modules/09g-after-agent-middlewares.md` (phase 7) |
 | 10      | Backend: Memory System           | [x]    | `modules/10-memory-system.md`                                                                                                                                                                                                                                                                                                                                             |
 | 11      | Backend: Subagents               | [x]    | `modules/11a-subagents-primitives.md` (phase 1: config, token_collector, registry), `modules/11b-subagents-builtins-executor.md` (phase 2: builtins, executor, background task lifecycle)                                                                                                                                                                                 |
-| 12      | Backend: Tools System            | [x]    | `modules/12a-tools-primitives-registry.md` (phases 1–2), `modules/12b-tools-builtins.md` (phase 3: clarification, present_files, view_image, task), `modules/12c-tools-agent-builtins.md` (phase 3: tool_search, invoke_acp_agent, setup_agent, update_agent)                                                                                                           |
-| 13      | Backend: Skills System           | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
+| 12      | Backend: Tools System            | [x]    | `modules/12a-tools-primitives-registry.md` (phases 1–2), `modules/12b-tools-builtins.md` (phase 3: clarification, present_files, view_image, task), `modules/12c-tools-agent-builtins.md` (phase 3: tool_search, invoke_acp_agent, setup_agent, update_agent)                                                                                                             |
+| 13      | Backend: Skills System           | [~]    | `modules/13a-skills-primitives-storage.md` (phases 1–2: types, `__init__`, storage), `modules/13b-skills-processing-install.md` (phases 3–4: parser, validation, security_scanner, tool_policy, installer, skill_evolution_config)                                                                                                                                        |
 | 14      | Backend: MCP Integration         | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
 | 15      | Backend: Sandbox                 | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
 | 16      | Backend: Model Layer             | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |

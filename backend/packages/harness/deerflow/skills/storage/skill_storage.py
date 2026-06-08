@@ -12,9 +12,14 @@ from deerflow.skills.types import SKILL_MD_FILE, Skill, SkillCategory  # noqa: F
 
 logger = logging.getLogger(__name__)
 
+# [DL-NOTE] Strict kebab-case enforced at all write entry points: no underscores, uppercase, or leading/trailing hyphens.
+# Prevents injection attacks via skill names and keeps names safe as filesystem path segments.
 _SKILL_NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
+# [DL-INSIGHT] Template Method pattern: subclasses implement a small set of storage-specific atomic ops
+# (_iter_skill_files, read/write/delete, install, exists, history); base class provides the orchestration flows
+# (load_skills, path helpers, validation) that compose those atomics. Swapping filesystem → DB = subclass only.
 class SkillStorage(ABC):
     """Abstract base for skill storage backends.
 
@@ -52,6 +57,7 @@ class SkillStorage(ABC):
         if not relative_path:
             raise ValueError("relative_path must not be empty.")
         resolved_base = base_dir.resolve()
+        # [DL-WARN] Uses resolve() + relative_to() — guards against symlink-based traversal, not just ".." strings.
         target = (resolved_base / relative_path).resolve()
         try:
             target.relative_to(resolved_base)
@@ -66,6 +72,8 @@ class SkillStorage(ABC):
 
         from deerflow.skills.validation import _validate_skill_frontmatter
 
+        # [DL-NOTE] _validate_skill_frontmatter expects a directory path, not raw content.
+        # Writing to a temp dir is the workaround — lets the validator run its full file-read pipeline.
         with tempfile.TemporaryDirectory() as tmp_dir:
             temp_skill_dir = Path(tmp_dir) / SkillStorage.validate_skill_name(name)
             temp_skill_dir.mkdir(parents=True, exist_ok=True)
@@ -78,6 +86,8 @@ class SkillStorage(ABC):
 
     def ensure_safe_support_path(self, name: str, relative_path: str) -> Path:
         """Validate and return the resolved absolute path for a support file."""
+        # [DL-NOTE] Explicit allowlist of support subdirs prevents placing files outside expected locations.
+        # Two-layer defense: string-level (no ".." parts) + resolve()-level (symlink traversal).
         _ALLOWED_SUPPORT_SUBDIRS = {"references", "templates", "scripts", "assets"}
         skill_dir = self.get_custom_skill_dir(self.validate_skill_name(name)).resolve()
         if not relative_path or relative_path.endswith("/"):
@@ -142,6 +152,8 @@ class SkillStorage(ABC):
         """Sync wrapper — delegates to :meth:`ainstall_skill_from_archive`."""
         from deerflow.skills.installer import _run_async_install
 
+        # [DL-NOTE] _run_async_install detects a running event loop and uses a ThreadPoolExecutor if one exists,
+        # avoiding "cannot run nested event loop" errors when called from inside a FastAPI endpoint.
         return _run_async_install(self.ainstall_skill_from_archive(archive_path))
 
     @abstractmethod
@@ -203,6 +215,7 @@ class SkillStorage(ABC):
         Origin: ``deerflow.skills.manager.get_skill_history_file``.
         """
         normalized_name = self.validate_skill_name(name)
+        # [DL-NOTE] JSONL append-only audit trail; only custom skills have history — public skills are immutable.
         return self.get_skills_root_path() / SkillCategory.CUSTOM.value / ".history" / f"{normalized_name}.jsonl"
 
     # ------------------------------------------------------------------
@@ -228,6 +241,8 @@ class SkillStorage(ABC):
 
         skills = list(skills_by_name.values())
 
+        # [DL-INSIGHT] Re-reads extensions_config.json fresh on every call — no caching — so skill enables/disables
+        # made by another process (Gateway API, skill_manage_tool) are always visible without a restart.
         # Merge enabled state from extensions config (re-read every call so
         # changes made by another process are picked up immediately).
         try:

@@ -9,6 +9,8 @@ from .types import SKILL_MD_FILE, Skill, SkillCategory
 logger = logging.getLogger(__name__)
 
 
+# [DL-INSIGHT] Three-way semantic: None=unrestricted, []=deny all, [x,y]=allowlist.
+# The caller (tool_policy.py) acts on these three cases — None must never be confused with an empty list.
 def parse_allowed_tools(raw: object, skill_file: Path) -> list[str] | None:
     """Parse the optional allowed-tools frontmatter field.
 
@@ -57,6 +59,8 @@ def parse_skill_file(skill_file: Path, category: SkillCategory, relative_path: P
 
         front_matter_text = front_matter_match.group(1)
 
+        # [DL-NOTE] yaml.safe_load replaces a hand-rolled parser that stored quoted values with
+        # surrounding quotes intact (issue #1803); now consistent with validation.py's approach.
         try:
             metadata = yaml.safe_load(front_matter_text)
         except yaml.YAMLError as exc:
@@ -99,12 +103,15 @@ def parse_skill_file(skill_file: Path, category: SkillCategory, relative_path: P
             license=license_text,
             skill_dir=skill_file.parent,
             skill_file=skill_file,
+            # [DL-NOTE] Falls back to the immediate directory name — correct for flat layouts (one skill per dir).
             relative_path=relative_path or Path(skill_file.parent.name),
             category=category,
             allowed_tools=allowed_tools,
             enabled=True,  # Actual state comes from the extensions config file.
         )
 
+    # [DL-WARN] Bare except is intentional: parse failures must never crash the discovery loop.
+    # All errors are logged; the skill is silently dropped.
     except Exception:
         logger.exception("Unexpected error parsing skill file %s", skill_file)
         return None

@@ -35,6 +35,7 @@ class LocalSkillStorage(SkillStorage):
         self,
         host_path: str | None = None,
         container_path: str = DEFAULT_SKILLS_CONTAINER_PATH,
+        # [DL-NOTE] app_config injection point for testing — avoids touching the real config file in unit tests.
         app_config=None,
     ) -> None:
         super().__init__(container_path=container_path)
@@ -68,6 +69,8 @@ class LocalSkillStorage(SkillStorage):
             if not category_path.exists() or not category_path.is_dir():
                 continue
             for current_root, dir_names, file_names in os.walk(category_path, followlinks=True):
+                # [DL-NOTE] In-place mutation of dir_names is the os.walk pruning mechanism — skips hidden dirs
+                # (.history, .installing-*) and ensures deterministic sort order across platforms.
                 dir_names[:] = sorted(name for name in dir_names if not name.startswith("."))
                 if SKILL_MD_FILE not in file_names:
                     continue
@@ -81,6 +84,8 @@ class LocalSkillStorage(SkillStorage):
     def write_custom_skill(self, name: str, relative_path: str, content: str) -> None:
         target = self.validate_relative_path(relative_path, self.get_custom_skill_dir(name))
         target.parent.mkdir(parents=True, exist_ok=True)
+        # [DL-INSIGHT] Atomic write: temp file created in same directory as target (dir=target.parent) so
+        # Path.replace() is a same-filesystem rename — guaranteed atomic on POSIX, never a partial read.
         with tempfile.NamedTemporaryFile(
             "w",
             encoding="utf-8",
@@ -133,6 +138,8 @@ class LocalSkillStorage(SkillStorage):
             is_valid, message, skill_name = _validate_skill_frontmatter(skill_dir)
             if not is_valid:
                 raise ValueError(f"Invalid skill: {message}")
+            # [DL-NOTE] Defense-in-depth: checks path separators even though validate_skill_name already ran.
+            # Frontmatter name might differ from the normalized name returned by the validator.
             if not skill_name or "/" in skill_name or "\\" in skill_name or ".." in skill_name:
                 raise ValueError(f"Invalid skill name: {skill_name}")
 
@@ -142,6 +149,8 @@ class LocalSkillStorage(SkillStorage):
 
             await _scan_skill_archive_contents_or_raise(skill_dir, skill_name)
 
+            # [DL-INSIGHT] Staging inside custom_dir (same filesystem) enables atomic rename via _move_staged_skill_into_reserved_target.
+            # "." prefix means _iter_skill_files skips this temp dir during any concurrent load_skills() call.
             with tempfile.TemporaryDirectory(prefix=f".installing-{skill_name}-", dir=custom_dir) as staging_root:
                 staging_target = Path(staging_root) / skill_name
                 shutil.copytree(skill_dir, staging_target)
@@ -159,10 +168,13 @@ class LocalSkillStorage(SkillStorage):
         self.ensure_custom_skill_is_editable(name)
         target = self.get_custom_skill_dir(name)
         if history_meta is not None:
+            # [DL-NOTE] History is captured *before* deletion so prev_content is preserved even if rmtree fails.
             prev_content = self.read_custom_skill(name)
             try:
                 self.append_history(name, {**history_meta, "prev_content": prev_content})
             except OSError as e:
+                # [DL-NOTE] Graceful degradation: readonly/permission errors on history write are logged but
+                # do not abort deletion — history is best-effort, the actual removal must still proceed.
                 if not isinstance(e, PermissionError) and e.errno not in {errno.EACCES, errno.EPERM, errno.EROFS}:
                     raise
                 logger.warning(

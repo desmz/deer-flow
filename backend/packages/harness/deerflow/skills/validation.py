@@ -11,7 +11,8 @@ import yaml
 from deerflow.skills.parser import parse_allowed_tools
 from deerflow.skills.types import SKILL_MD_FILE
 
-# Allowed properties in SKILL.md frontmatter
+# [DL-INSIGHT] Schema allowlist: any key outside this set fails validation at install time.
+# Reject-unknown-keys is stricter than ignore-unknown-keys — forces authors to use intentional fields only.
 ALLOWED_FRONTMATTER_PROPERTIES = {"name", "description", "license", "allowed-tools", "metadata", "compatibility", "version", "author"}
 
 
@@ -66,7 +67,7 @@ def _validate_skill_frontmatter(skill_dir: Path) -> tuple[bool, str, str | None]
     if not name:
         return False, "Name cannot be empty", None
 
-    # Check naming convention (hyphen-case: lowercase with hyphens)
+    # [DL-NOTE] Name doubles as directory name and container path segment — hyphen-case keeps it filesystem-safe.
     if not re.match(r"^[a-z0-9-]+$", name):
         return False, f"Name '{name}' should be hyphen-case (lowercase letters, digits, and hyphens only)", None
     if name.startswith("-") or name.endswith("-") or "--" in name:
@@ -80,6 +81,8 @@ def _validate_skill_frontmatter(skill_dir: Path) -> tuple[bool, str, str | None]
         return False, f"Description must be a string, got {type(description).__name__}", None
     description = description.strip()
     if description:
+        # [DL-INSIGHT] Angle-bracket ban is prompt-injection / XSS prevention: description is injected
+        # verbatim into the agent's system prompt and indirectly into UI displays.
         if "<" in description or ">" in description:
             return False, "Description cannot contain angle brackets (< or >)", None
         if len(description) > 1024:
@@ -88,6 +91,8 @@ def _validate_skill_frontmatter(skill_dir: Path) -> tuple[bool, str, str | None]
     try:
         parse_allowed_tools(frontmatter.get("allowed-tools"), skill_md)
     except ValueError as e:
+        # [DL-NOTE] Strip absolute path from user-facing error: replace full path with just "SKILL.md"
+        # so the install error shown to the user doesn't leak server filesystem layout.
         return False, str(e).replace(str(skill_md), SKILL_MD_FILE), None
 
     return True, "Skill is valid!", name

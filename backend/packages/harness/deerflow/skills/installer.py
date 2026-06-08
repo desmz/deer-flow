@@ -17,6 +17,8 @@ from deerflow.skills.security_scanner import scan_skill_content
 
 logger = logging.getLogger(__name__)
 
+# [DL-NOTE] Scan scope: SKILL.md always; scripts/ subdir always (executable=True); these dirs
+# with text suffixes only (executable=False). assets/ and binary files are never scanned.
 _PROMPT_INPUT_DIRS = {"references", "templates"}
 _PROMPT_INPUT_SUFFIXES = frozenset({".json", ".markdown", ".md", ".rst", ".txt", ".yaml", ".yml"})
 
@@ -49,6 +51,8 @@ def is_unsafe_zip_member(info: zipfile.ZipInfo) -> bool:
 
 def is_symlink_member(info: zipfile.ZipInfo) -> bool:
     """Detect symlinks based on the external attributes stored in the ZipInfo."""
+    # [DL-NOTE] external_attr stores Unix file mode in the upper 16 bits (ZIP spec §4.5.7).
+    # >> 16 extracts those bits; S_ISLNK checks the file type field within the mode.
     mode = info.external_attr >> 16
     return stat.S_ISLNK(mode)
 
@@ -105,6 +109,8 @@ def safe_extract_skill_archive(
 
         normalized_name = posixpath.normpath(info.filename.replace("\\", "/"))
         member_path = dest_root.joinpath(*PurePosixPath(normalized_name).parts)
+        # [DL-INSIGHT] Two-stage traversal check: is_unsafe_zip_member catches obvious cases;
+        # this resolve()-based check catches edge cases that survive normalization (e.g., encoded slashes).
         if not member_path.resolve().is_relative_to(dest_root):
             raise ValueError(f"Zip entry escapes destination: {info.filename!r}")
         member_path.parent.mkdir(parents=True, exist_ok=True)
@@ -131,6 +137,9 @@ def _should_scan_support_file(rel_path: Path) -> bool:
     return bool(rel_path.parts) and rel_path.parts[0] in _PROMPT_INPUT_DIRS and rel_path.suffix.lower() in _PROMPT_INPUT_SUFFIXES
 
 
+# [DL-INSIGHT] Reserve-then-populate pattern: mkdir(mode=0o700) atomically claims the target name.
+# FileExistsError → SkillAlreadyExistsError before any data is moved; finally cleans up on failure.
+# Not a single rename (not truly atomic) but handles concurrent installs and mid-move failures correctly.
 def _move_staged_skill_into_reserved_target(staging_target: Path, target: Path) -> None:
     installed = False
     reserved = False
@@ -166,6 +175,8 @@ async def _scan_skill_file_or_raise(skill_dir: Path, path: Path, skill_name: str
         if rel_path == "SKILL.md":
             raise SkillSecurityScanError(f"Security scan blocked skill '{skill_name}': {reason}")
         raise SkillSecurityScanError(f"Security scan blocked {location}: {reason}")
+    # [DL-INSIGHT] Stricter policy for executables: 'warn' is not good enough for scripts.
+    # Text files (SKILL.md, prompts) may pass on 'warn'; executable scripts require explicit 'allow'.
     if executable and decision != "allow":
         raise SkillSecurityScanError(f"Security scan rejected executable {location}: {reason}")
     if decision not in {"allow", "warn"}:
@@ -192,6 +203,9 @@ async def _scan_skill_archive_contents_or_raise(skill_dir: Path, skill_name: str
         await _scan_skill_file_or_raise(skill_dir, path, skill_name, executable=_is_script_support_file(rel_path))
 
 
+# [DL-INSIGHT] Sync-from-async bridge: if a running event loop is detected (e.g., inside FastAPI),
+# asyncio.run() cannot be called directly — it spawns a thread to run the coroutine in isolation.
+# Without an existing loop, asyncio.run() is called directly (CLI, tests).
 def _run_async_install(coro):
     try:
         loop = asyncio.get_running_loop()
