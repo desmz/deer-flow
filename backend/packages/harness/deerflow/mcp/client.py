@@ -18,6 +18,8 @@ def build_server_params(server_name: str, config: McpServerConfig) -> dict[str, 
     Returns:
         Dictionary of server parameters for langchain-mcp-adapters.
     """
+    # [DL-NOTE] McpServerConfig.type already defaults to "stdio"; `or "stdio"` is an extra
+    # defensive fallback in case the field is explicitly set to None or empty string.
     transport_type = config.type or "stdio"
     params: dict[str, Any] = {"transport": transport_type}
 
@@ -25,6 +27,7 @@ def build_server_params(server_name: str, config: McpServerConfig) -> dict[str, 
         if not config.command:
             raise ValueError(f"MCP server '{server_name}' with stdio transport requires 'command' field")
         params["command"] = config.command
+        # [DL-NOTE] args always included (even as []) — the adapter requires it for stdio.
         params["args"] = config.args
         # Add environment variables if present
         if config.env:
@@ -34,6 +37,8 @@ def build_server_params(server_name: str, config: McpServerConfig) -> dict[str, 
             raise ValueError(f"MCP server '{server_name}' with {transport_type} transport requires 'url' field")
         params["url"] = config.url
         # Add headers if present
+        # [DL-NOTE] Only static headers from config here. OAuth Authorization header is injected
+        # separately via build_oauth_tool_interceptor / get_initial_oauth_headers in tools.py.
         if config.headers:
             params["headers"] = config.headers
     else:
@@ -58,6 +63,8 @@ def build_servers_config(extensions_config: ExtensionsConfig) -> dict[str, dict[
         return {}
 
     servers_config = {}
+    # [DL-INSIGHT] Partial-failure tolerance: one misconfigured server is logged and skipped;
+    # valid servers still load. This prevents a single bad entry from silently disabling all MCP tools.
     for server_name, server_config in enabled_servers.items():
         try:
             servers_config[server_name] = build_server_params(server_name, server_config)

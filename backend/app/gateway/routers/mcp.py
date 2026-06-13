@@ -9,9 +9,15 @@ from pydantic import BaseModel, Field
 from deerflow.config.extensions_config import ExtensionsConfig, get_extensions_config, reload_extensions_config
 
 logger = logging.getLogger(__name__)
+# [DL-NOTE] Mounted at /api/mcp/config in app.py. The prefix="/api" matches the Gateway's
+# nginx rewrite rule (/api/langgraph/* → /api/*) so the MCP API is accessible at both paths.
 router = APIRouter(prefix="/api", tags=["mcp"])
 
 
+# [DL-INSIGHT] Router-local response models mirror the domain models (McpOAuthConfig,
+# McpServerConfig) but without ConfigDict(extra="allow"). Extra fields stored in
+# extensions_config.json (e.g. mcpInterceptors) are stripped from API responses,
+# giving the API a stable surface independent of the flexible domain schema.
 class McpOAuthConfigResponse(BaseModel):
     """OAuth configuration for an MCP server."""
 
@@ -90,6 +96,8 @@ async def get_mcp_configuration() -> McpConfigResponse:
         }
         ```
     """
+    # [DL-NOTE] Uses the Gateway's in-process cached singleton — not a fresh disk read.
+    # The LangGraph server reads extensions_config.json independently via its own mtime check.
     config = get_extensions_config()
 
     return McpConfigResponse(mcp_servers={name: McpServerConfigResponse(**server.model_dump()) for name, server in config.mcp_servers.items()})
@@ -139,13 +147,16 @@ async def update_mcp_configuration(request: McpConfigUpdateRequest) -> McpConfig
 
         # If no config file exists, create one in the parent directory (project root)
         if config_path is None:
+            # [DL-NOTE] Gateway runs from backend/; parent is the project root — the canonical
+            # location for extensions_config.json on first-time creation.
             config_path = Path.cwd().parent / "extensions_config.json"
             logger.info(f"No existing extensions config found. Creating new config at: {config_path}")
 
         # Load current config to preserve skills configuration
         current_config = get_extensions_config()
 
-        # Convert request to dict format for JSON serialization
+        # [DL-INSIGHT] extensions_config.json stores both MCP servers and skills. A PUT to the MCP
+        # endpoint must re-merge existing skill states or they would be silently wiped from disk.
         config_data = {
             "mcpServers": {name: server.model_dump() for name, server in request.mcp_servers.items()},
             "skills": {name: {"enabled": skill.enabled} for name, skill in current_config.skills.items()},
@@ -160,7 +171,9 @@ async def update_mcp_configuration(request: McpConfigUpdateRequest) -> McpConfig
         # NOTE: No need to reload/reset cache here - LangGraph Server (separate process)
         # will detect config file changes via mtime and reinitialize MCP tools automatically
 
-        # Reload the configuration and update the global cache
+        # [DL-NOTE] reload_extensions_config() updates *this* process's cached singleton so
+        # subsequent GET /api/mcp/config calls reflect the new state immediately. The LangGraph
+        # server's MCP tools cache is NOT reset here — it picks up the change via mtime polling.
         reloaded_config = reload_extensions_config()
         return McpConfigResponse(mcp_servers={name: McpServerConfigResponse(**server.model_dump()) for name, server in reloaded_config.mcp_servers.items()})
 

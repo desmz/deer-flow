@@ -8,8 +8,11 @@ from langchain_core.tools import BaseTool
 
 logger = logging.getLogger(__name__)
 
+# [DL-INSIGHT] Module-singleton pattern: four globals act as process-local shared state.
+# Each process (Gateway and LangGraph server) holds its own independent cache.
 _mcp_tools_cache: list[BaseTool] | None = None
 _cache_initialized = False
+# [DL-NOTE] asyncio.Lock() at module level is safe in Python 3.10+ — no loop binding at creation.
 _initialization_lock = asyncio.Lock()
 _config_mtime: float | None = None  # Track config file modification time
 
@@ -20,6 +23,7 @@ def _get_config_mtime() -> float | None:
     Returns:
         The modification time as a float, or None if the file doesn't exist.
     """
+    # [DL-NOTE] Lazy import breaks potential circular: extensions_config → mcp → cache → extensions_config.
     from deerflow.config.extensions_config import ExtensionsConfig
 
     config_path = ExtensionsConfig.resolve_config_path()
@@ -28,6 +32,8 @@ def _get_config_mtime() -> float | None:
     return None
 
 
+# [DL-INSIGHT] Staleness detection uses filesystem mtime instead of TTL. When the Gateway API
+# writes extensions_config.json, the LangGraph server process detects the change on the next call.
 def _is_cache_stale() -> bool:
     """Check if the cache is stale due to config file changes.
 
@@ -63,11 +69,14 @@ async def initialize_mcp_tools() -> list[BaseTool]:
     """
     global _mcp_tools_cache, _cache_initialized, _config_mtime
 
+    # [DL-INSIGHT] Lock guards against concurrent async callers racing to initialize.
+    # This is a double-checked locking pattern: check _cache_initialized inside the lock.
     async with _initialization_lock:
         if _cache_initialized:
             logger.info("MCP tools already initialized")
             return _mcp_tools_cache or []
 
+        # [DL-NOTE] Lazy import of get_mcp_tools breaks circular: mcp.cache ← mcp.tools ← mcp.client.
         from deerflow.mcp.tools import get_mcp_tools
 
         logger.info("Initializing MCP tools...")
@@ -110,6 +119,9 @@ def get_cached_mcp_tools() -> list[BaseTool]:
                 # we need to create a new loop in a thread
                 import concurrent.futures
 
+                # [DL-WARN] Spawning a thread and calling asyncio.run() there escapes the running
+                # loop. The async Lock inside initialize_mcp_tools() lives on its own loop in the
+                # new thread — so it doesn't guard against the outer loop's concurrent callers.
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(asyncio.run, initialize_mcp_tools())
                     future.result()
@@ -130,6 +142,7 @@ def get_cached_mcp_tools() -> list[BaseTool]:
     return _mcp_tools_cache or []
 
 
+# [DL-NOTE] Also called by the hot-reload path in get_cached_mcp_tools() when _is_cache_stale() is True.
 def reset_mcp_tools_cache() -> None:
     """Reset the MCP tools cache.
 

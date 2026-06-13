@@ -605,11 +605,23 @@ Phase 5 — Bundled skills deep dive:
 
 **Key files:**
 
-| Path                                     | Status | Notes                                     |
-| ---------------------------------------- | ------ | ----------------------------------------- |
-| `backend/packages/harness/deerflow/mcp/` | `[ ]`  | MCP client, tools, cache, OAuth           |
-| `backend/app/gateway/routers/mcp.py`     | `[ ]`  | HTTP router for MCP server management API |
-| `backend/tests/test_mcp_*.py`            | `[ ]`  | MCP integration tests (glob pattern)      |
+| Path                                                           | Status | Notes                                                                          |
+| -------------------------------------------------------------- | ------ | ------------------------------------------------------------------------------ |
+| `backend/packages/harness/deerflow/mcp/cache.py`               | `[x]`  | Tool schema caching strategy; avoids re-fetching schemas on every connection   |
+| `backend/packages/harness/deerflow/mcp/client.py`              | `[x]`  | MCP client; connection lifecycle and protocol handling                         |
+| `backend/packages/harness/deerflow/mcp/oauth.py`               | `[x]`  | OAuth flow for authenticating with remote MCP servers                          |
+| `backend/packages/harness/deerflow/mcp/tools.py`               | `[x]`  | Converts MCP tool definitions into LangGraph-compatible tools                  |
+| `backend/app/gateway/routers/mcp.py`                           | `[x]`  | HTTP router for MCP server management API                                      |
+
+**Study order:**
+
+Phase 1 — Bottom-up (primitives first, top-level coordinator last):
+
+1. `mcp/cache.py` — tool schema caching; read first as the simplest primitive with no intra-package dependencies
+2. `mcp/oauth.py` — OAuth flow for remote MCP servers; an auth primitive consumed by the client
+3. `mcp/client.py` — MCP client; connection and protocol handling; depends on cache and oauth
+4. `mcp/tools.py` — converts MCP tool definitions into LangGraph tools; depends on client
+5. `app/gateway/routers/mcp.py` — HTTP API for MCP management; the top-level HTTP surface
 
 ---
 
@@ -1021,7 +1033,7 @@ Phase 5 — Bundled skills deep dive:
 | 11      | Backend: Subagents               | [x]    | `modules/11a-subagents-primitives.md` (phase 1: config, token_collector, registry), `modules/11b-subagents-builtins-executor.md` (phase 2: builtins, executor, background task lifecycle)                                                                                                                                                                                 |
 | 12      | Backend: Tools System            | [x]    | `modules/12a-tools-primitives-registry.md` (phases 1–2), `modules/12b-tools-builtins.md` (phase 3: clarification, present_files, view_image, task), `modules/12c-tools-agent-builtins.md` (phase 3: tool_search, invoke_acp_agent, setup_agent, update_agent)                                                                                                             |
 | 13      | Backend: Skills System           | [~]    | `modules/13a-skills-primitives-storage.md` (phases 1–2: types, `__init__`, storage), `modules/13b-skills-processing-install.md` (phases 3–4: parser, validation, security_scanner, tool_policy, installer, skill_evolution_config)                                                                                                                                        |
-| 14      | Backend: MCP Integration         | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
+| 14      | Backend: MCP Integration         | [x]    | `modules/14-mcp-integration.md`                                                                                                                                                                                                                                                                                                                                           |
 | 15      | Backend: Sandbox                 | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
 | 16      | Backend: Model Layer             | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
 | 17      | Backend: Config System           | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
