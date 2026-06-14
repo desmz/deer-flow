@@ -25,6 +25,8 @@ from langchain_openai.chat_models.base import (
     _create_usage_metadata,
 )
 
+# [DL-NOTE] re.DOTALL is required: reasoning content spans multiple lines,
+# and without it `.` stops at each newline, breaking the match.
 _THINK_TAG_RE = re.compile(r"<think>\s*(.*?)\s*</think>", re.DOTALL)
 
 
@@ -74,6 +76,8 @@ def _merge_reasoning(*values: str | None) -> str | None:
     return "\n\n".join(merged) if merged else None
 
 
+# [DL-NOTE] preserve_whitespace=True → raw concat (streaming: partial chunks must not be normalized mid-flight).
+# preserve_whitespace=False → deduplicated merge (non-streaming: complete response, safe to clean up).
 def _with_reasoning_content(
     message: AIMessage | AIMessageChunk,
     reasoning: str | None,
@@ -92,6 +96,7 @@ def _with_reasoning_content(
             additional_kwargs.get("reasoning_content"),
             reasoning,
         )
+    # [DL-NOTE] LangChain messages are immutable Pydantic models; model_copy creates a new instance.
     return message.model_copy(update={"additional_kwargs": additional_kwargs})
 
 
@@ -105,6 +110,8 @@ class PatchedChatMiniMax(ChatOpenAI):
         stop: list[str] | None = None,
         **kwargs: Any,
     ) -> dict:
+        # [DL-INSIGHT] reasoning_split=True tells MiniMax to return reasoning separately in reasoning_details
+        # rather than (or in addition to) inline <think> tags. Merges with existing extra_body from config.yaml.
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
         extra_body = payload.get("extra_body")
         if isinstance(extra_body, dict):
@@ -122,6 +129,8 @@ class PatchedChatMiniMax(ChatOpenAI):
         default_chunk_class: type,
         base_generation_info: dict | None,
     ) -> ChatGenerationChunk | None:
+        # [DL-NOTE] MiniMax sends the same text in two SSE formats simultaneously: choices.delta (Chat Completions)
+        # AND content.delta (Responses API style). Drop the duplicate to avoid double-appending content.
         if chunk.get("type") == "content.delta":
             return None
 
@@ -201,6 +210,8 @@ class PatchedChatMiniMax(ChatOpenAI):
                     cleaned_content, inline_reasoning = _strip_inline_think_tags(content)
 
                 choice_message = choice.get("message", {}) if isinstance(choice, Mapping) else {}
+                # [DL-INSIGHT] MiniMax can return reasoning in BOTH formats at once: structured reasoning_details
+                # (from reasoning_split=True) AND inline <think> tags. Both are extracted and deduplicated.
                 split_reasoning = _extract_reasoning_text(choice_message.get("reasoning_details"))
                 merged_reasoning = _merge_reasoning(split_reasoning, inline_reasoning)
 

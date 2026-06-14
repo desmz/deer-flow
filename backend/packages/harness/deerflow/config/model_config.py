@@ -1,6 +1,8 @@
 from pydantic import BaseModel, ConfigDict, Field
 
 
+# [DL-INSIGHT] This schema is the contract between config.yaml and the model factory.
+# Declared fields are DeerFlow metadata; all unknown fields pass through via extra="allow".
 class ModelConfig(BaseModel):
     """Config section for a model"""
 
@@ -12,6 +14,8 @@ class ModelConfig(BaseModel):
         description="Class path of the model provider(e.g. langchain_openai.ChatOpenAI)",
     )
     model: str = Field(..., description="Model name")
+    # [DL-INSIGHT] extra="allow" is the passthrough mechanism: unknown fields (api_key, base_url, temperature, etc.)
+    # are preserved and dumped directly as constructor kwargs to the provider class in factory.py.
     model_config = ConfigDict(extra="allow")
     use_responses_api: bool | None = Field(
         default=None,
@@ -32,6 +36,8 @@ class ModelConfig(BaseModel):
         description="Extra settings to be passed to the model when thinking is disabled",
     )
     supports_vision: bool = Field(default_factory=lambda: False, description="Whether the model supports vision/image inputs")
+    # [DL-NOTE] Legacy shortcut: `thinking` maps to `when_thinking_enabled["thinking"]`.
+    # factory.py merges both; prefer `when_thinking_enabled` for new configs.
     thinking: dict | None = Field(
         default_factory=lambda: None,
         description=(

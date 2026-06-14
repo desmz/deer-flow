@@ -58,6 +58,7 @@ def _build_usage_metadata(oai_usage: dict) -> dict:
 MAX_RETRIES = 3
 
 
+# [DL-INSIGHT] Extends BaseChatModel directly (not ChatOpenAI) because the Codex Responses API is an entirely different protocol from Chat Completions
 class CodexChatModel(BaseChatModel):
     """LangChain chat model using ChatGPT Codex Responses API.
 
@@ -71,6 +72,7 @@ class CodexChatModel(BaseChatModel):
     model: str = "gpt-5.4"
     reasoning_effort: str = "medium"
     retry_max_attempts: int = MAX_RETRIES
+    # [DL-NOTE] Plain _field annotation (not PrivateAttr) — Pydantic v2 excludes _-prefixed class annotations from model schema and serialization
     _access_token: str = ""
     _account_id: str = ""
 
@@ -98,6 +100,7 @@ class CodexChatModel(BaseChatModel):
             self._account_id = cred.account_id
             logger.info(f"Using Codex CLI credential (account: {self._account_id[:8]}...)")
         else:
+            # [DL-NOTE] Hard failure on missing credentials — unlike ClaudeChatModel which logs a warning and degrades; Codex has no credential fallback
             raise ValueError("Codex CLI credential not found. Expected ~/.codex/auth.json or CODEX_AUTH_PATH.")
 
         super().model_post_init(__context)
@@ -173,6 +176,7 @@ class CodexChatModel(BaseChatModel):
                     }
                 )
 
+        # [DL-INSIGHT] Responses API separates system prompts from the input array: SystemMessages → "instructions" field, all others → "input" items
         instructions = "\n\n".join(instructions_parts) or "You are a helpful assistant."
 
         return instructions, input_items
@@ -211,6 +215,7 @@ class CodexChatModel(BaseChatModel):
             "instructions": instructions,
             "input": input_items,
             "store": False,
+            # [DL-INSIGHT] Streaming is always required — the Codex endpoint only works with stream=True; _stream_response collects all SSE events and returns synchronously
             "stream": True,
             "reasoning": {"effort": self.reasoning_effort, "summary": "detailed"} if self.reasoning_effort != "none" else {"effort": "none"},
         }
@@ -270,6 +275,7 @@ class CodexChatModel(BaseChatModel):
         if not completed_response:
             raise RuntimeError("Codex API stream ended without response.completed event")
 
+        # [DL-WARN] Codex API quirk: response.completed.output can be empty even after the stream ends; real content only arrives via response.output_item.done events
         # ChatGPT Codex can emit the final assistant content only in stream events.
         # When response.completed arrives, response.output may still be empty.
         if streamed_output_items:
@@ -435,6 +441,7 @@ class CodexChatModel(BaseChatModel):
                         }
                     )
                 except Exception:
+                    # [DL-WARN] Graceful fallback on convert_to_openai_function failure — silently produces an empty schema; tool calls may fail at runtime
                     formatted_tools.append(
                         {
                             "type": "function",

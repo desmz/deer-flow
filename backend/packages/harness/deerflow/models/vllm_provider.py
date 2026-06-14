@@ -57,6 +57,7 @@ def _normalize_vllm_chat_template_kwargs(payload: dict[str, Any]) -> None:
         return
 
     normalized_chat_template_kwargs = dict(chat_template_kwargs)
+    # [DL-NOTE] setdefault: if enable_thinking is already set (even False), it is NOT overwritten by the legacy thinking value
     normalized_chat_template_kwargs.setdefault("enable_thinking", normalized_chat_template_kwargs["thinking"])
     normalized_chat_template_kwargs.pop("thinking", None)
     extra_body["chat_template_kwargs"] = normalized_chat_template_kwargs
@@ -71,6 +72,7 @@ def _reasoning_to_text(reasoning: Any) -> str:
         parts = [_reasoning_to_text(item) for item in reasoning]
         return "".join(part for part in parts if part)
 
+    # [DL-NOTE] key priority: text → content → reasoning; the "reasoning" key recurses into itself for nested structures
     if isinstance(reasoning, dict):
         for key in ("text", "content", "reasoning"):
             value = reasoning.get(key)
@@ -104,6 +106,8 @@ def _convert_delta_to_message_chunk_with_reasoning(_dict: Mapping[str, Any], def
             function_call["name"] = ""
         additional_kwargs["function_call"] = function_call
 
+    # [DL-INSIGHT] Dual storage: raw "reasoning" is kept for multi-turn re-injection; "reasoning_content" (text) is the DeerFlow frontend convention
+    # Empty string reasoning sets "reasoning" but NOT "reasoning_content" (falsy → _reasoning_to_text returns "" → if check skips it)
     reasoning = _dict.get("reasoning")
     if reasoning is not None:
         additional_kwargs["reasoning"] = reasoning
@@ -149,6 +153,7 @@ def _convert_delta_to_message_chunk_with_reasoning(_dict: Mapping[str, Any], def
 
 def _restore_reasoning_field(payload_msg: dict[str, Any], orig_msg: AIMessage) -> None:
     """Re-inject vLLM reasoning onto outgoing assistant messages."""
+    # [DL-NOTE] Fallback: if raw "reasoning" was lost, use "reasoning_content" text; vLLM accepts either on input
     reasoning = orig_msg.additional_kwargs.get("reasoning")
     if reasoning is None:
         reasoning = orig_msg.additional_kwargs.get("reasoning_content")
@@ -165,6 +170,7 @@ class VllmChatModel(ChatOpenAI):
     def _llm_type(self) -> str:
         return "vllm-openai-compatible"
 
+    # Multi-turn request payloads
     def _get_request_payload(
         self,
         input_: LanguageModelInput,
@@ -183,6 +189,7 @@ class VllmChatModel(ChatOpenAI):
                 if payload_msg.get("role") == "assistant" and isinstance(orig_msg, AIMessage):
                     _restore_reasoning_field(payload_msg, orig_msg)
         else:
+            # [DL-NOTE] LangChain may merge consecutive same-role messages or expand tool results → length mismatch; zip AI→assistant independently as fallback
             ai_messages = [message for message in original_messages if isinstance(message, AIMessage)]
             assistant_payloads = [message for message in payload_messages if message.get("role") == "assistant"]
             for payload_msg, ai_msg in zip(assistant_payloads, ai_messages):
@@ -190,6 +197,7 @@ class VllmChatModel(ChatOpenAI):
 
         return payload
 
+    # [DL-NOTE] Non-streaming responses
     def _create_chat_result(self, response: dict | openai.BaseModel, generation_info: dict | None = None) -> ChatResult:
         """Preserve vLLM reasoning on non-streaming responses."""
         result = super()._create_chat_result(response, generation_info=generation_info)
@@ -211,6 +219,7 @@ class VllmChatModel(ChatOpenAI):
 
         return result
 
+    # [DL-NOTE] Streaming deltas
     def _convert_chunk_to_generation_chunk(
         self,
         chunk: dict,
@@ -218,6 +227,7 @@ class VllmChatModel(ChatOpenAI):
         base_generation_info: dict | None,
     ) -> ChatGenerationChunk | None:
         """Preserve vLLM reasoning on streaming deltas."""
+        # [DL-NOTE] Responses-API sends duplicate content.delta events alongside choices-format deltas; drop the duplicate (same guard as PatchedChatMiniMax)
         if chunk.get("type") == "content.delta":
             return None
 

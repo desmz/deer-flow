@@ -57,6 +57,7 @@ class ClaudeChatModel(ChatAnthropic):
     prompt_cache_size: int = 3
     auto_thinking_budget: bool = True
     retry_max_attempts: int = MAX_RETRIES
+    # [DL-NOTE] PrivateAttr keeps OAuth runtime state out of Pydantic schema/serialization; plain _field assignment on a Pydantic model is ignored
     _is_oauth: bool = PrivateAttr(default=False)
     _oauth_access_token: str = PrivateAttr(default="")
 
@@ -80,6 +81,7 @@ class ClaudeChatModel(ChatAnthropic):
 
         # Extract actual key value (SecretStr.str() returns '**********')
         current_key = ""
+        # [DL-WARN] SecretStr.__str__() returns '**********'; must call .get_secret_value() to read the actual key value
         if self.anthropic_api_key:
             if hasattr(self.anthropic_api_key, "get_secret_value"):
                 current_key = self.anthropic_api_key.get_secret_value()
@@ -87,6 +89,7 @@ class ClaudeChatModel(ChatAnthropic):
                 current_key = str(self.anthropic_api_key)
 
         # Try the explicit Claude Code OAuth handoff sources if no valid key.
+        # [DL-NOTE] "your-anthropic-api-key" is the example config sentinel; treat it as absent and fall through to CLI OAuth credential
         if not current_key or current_key in ("your-anthropic-api-key",):
             cred = load_claude_code_credential()
             if cred:
@@ -106,6 +109,7 @@ class ClaudeChatModel(ChatAnthropic):
                 **(self.default_headers or {}),
                 "anthropic-beta": OAUTH_ANTHROPIC_BETAS,
             }
+            # [DL-INSIGHT] Anthropic API rejects cache_control with OAuth tokens; also stripped in _create/_acreate as belt-and-suspenders
             # OAuth tokens have a limit of 4 cache_control blocks — disable prompt caching
             self.enable_prompt_caching = False
             logger.info("OAuth token detected — will use Authorization: Bearer header")
@@ -174,6 +178,7 @@ class ClaudeChatModel(ChatAnthropic):
             payload["system"] = [billing_block]
 
         # Add metadata.user_id required by the API for OAuth billing validation
+        # [DL-NOTE] user_id must be a JSON-encoded string (not a plain string); the nested object format mirrors Claude Code CLI's billing wire protocol
         if not isinstance(payload.get("metadata"), dict):
             payload["metadata"] = {}
         if "user_id" not in payload["metadata"]:
@@ -189,6 +194,7 @@ class ClaudeChatModel(ChatAnthropic):
                 }
             )
 
+    # [DL-INSIGHT] System prompt must be fully static (no memory, no date) so it caches across all users/turns; dynamic context goes in DynamicContextMiddleware → first HumanMessage
     def _apply_prompt_caching(self, payload: dict) -> None:
         """Apply ephemeral cache_control to system, recent messages, and last tool definition.
 
@@ -242,6 +248,7 @@ class ClaudeChatModel(ChatAnthropic):
         if tools and isinstance(tools[-1], dict):
             candidates.append(tools[-1])
 
+        # [DL-INSIGHT] Breakpoints on LAST candidates: later positions cover a larger prefix → better cache hit rates
         # Apply cache_control only to the last MAX_CACHE_BREAKPOINTS candidates
         # to stay within the API limit.
         for block in candidates[-MAX_CACHE_BREAKPOINTS:]:
@@ -295,6 +302,7 @@ class ClaudeChatModel(ChatAnthropic):
 
     def _generate(self, messages: list[BaseMessage], stop: list[str] | None = None, **kwargs: Any) -> Any:
         """Override with OAuth patching and retry logic."""
+        # [DL-WARN] Re-patch on every call; defensive against LangChain reinitializing _client between calls
         if self._is_oauth:
             self._patch_client_oauth(self._client)
 

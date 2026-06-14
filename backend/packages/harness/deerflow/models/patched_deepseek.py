@@ -23,10 +23,14 @@ class PatchedChatDeepSeek(ChatDeepSeek):
     request payload.
     """
 
+    # [DL-NOTE] is_lc_serializable lets LangChain serialize this subclass in traces/checkpoints.
+    # patched_openai.py doesn't need it because ChatOpenAI already returns True.
     @classmethod
     def is_lc_serializable(cls) -> bool:
         return True
 
+    # [DL-NOTE] Two keys map to the same env var: ChatDeepSeek uses openai_api_key internally
+    # (OpenAI-compatible client), but the env var convention is DEEPSEEK_API_KEY.
     @property
     def lc_secrets(self) -> dict[str, str]:
         return {"api_key": "DEEPSEEK_API_KEY", "openai_api_key": "DEEPSEEK_API_KEY"}
@@ -59,6 +63,8 @@ class PatchedChatDeepSeek(ChatDeepSeek):
                 if payload_msg.get("role") == "assistant" and isinstance(orig_msg, AIMessage):
                     reasoning_content = orig_msg.additional_kwargs.get("reasoning_content")
                     if reasoning_content is not None:
+                        # [DL-INSIGHT] Simpler than patched_openai: reasoning_content is a top-level message field,
+                        # not nested inside tool-call objects — no per-tool-call ID matching needed.
                         payload_msg["reasoning_content"] = reasoning_content
         else:
             # Fallback: match by counting assistant messages

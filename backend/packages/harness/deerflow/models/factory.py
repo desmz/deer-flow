@@ -10,6 +10,8 @@ from deerflow.tracing import build_tracing_callbacks
 logger = logging.getLogger(__name__)
 
 
+# [DL-NOTE] Used to merge nested extra_body dicts (e.g. OpenAI thinking disable payload)
+# without mutating the original config dicts or clobbering sibling keys.
 def _deep_merge_dicts(base: dict | None, override: dict) -> dict:
     """Recursively merge two dictionaries without mutating the inputs."""
     merged = dict(base or {})
@@ -31,6 +33,8 @@ def _vllm_disable_chat_template_kwargs(chat_template_kwargs: dict) -> dict:
     return disable_kwargs
 
 
+# [DL-NOTE] Narrow fix for ChatOpenAI with custom base_url (older path).
+# A broader fix on lines 146-148 covers all providers with stream_usage in model_fields.
 def _enable_stream_usage_by_default(model_use_path: str, model_settings_from_config: dict) -> None:
     """Enable stream usage for OpenAI-compatible models unless explicitly configured.
 
@@ -63,6 +67,8 @@ def create_chat_model(name: str | None = None, thinking_enabled: bool = False, *
     if model_config is None:
         raise ValueError(f"Model {name} not found in config") from None
     model_class = resolve_class(model_config.use, BaseChatModel)
+    # [DL-INSIGHT] Exclude DeerFlow metadata fields; everything else (api_key, base_url, temperature,
+    # max_tokens, etc.) passes through to the provider constructor via ModelConfig.extra="allow".
     model_settings_from_config = model_config.model_dump(
         exclude_none=True,
         exclude={
@@ -91,6 +97,8 @@ def create_chat_model(name: str | None = None, thinking_enabled: bool = False, *
         if effective_wte:
             model_settings_from_config.update(effective_wte)
     if not thinking_enabled:
+        # [DL-INSIGHT] Four-path disable logic: each branch detects which backend is in use
+        # by inspecting the shape of when_thinking_enabled, not the provider class name.
         if model_config.when_thinking_disabled is not None:
             # User-provided disable settings take full precedence
             model_settings_from_config.update(model_config.when_thinking_disabled)
@@ -117,6 +125,7 @@ def create_chat_model(name: str | None = None, thinking_enabled: bool = False, *
     _enable_stream_usage_by_default(model_config.use, model_settings_from_config)
 
     # For Codex Responses API models: map thinking mode to reasoning_effort
+    # [DL-NOTE] Deferred import avoids circular dependency at module load time.
     from deerflow.models.openai_codex_provider import CodexChatModel
 
     if issubclass(model_class, CodexChatModel):
@@ -134,6 +143,7 @@ def create_chat_model(name: str | None = None, thinking_enabled: bool = False, *
 
     # For MindIE models: enforce conservative retry defaults.
     # Timeout normalization is handled inside MindIEChatModel itself.
+    # [DL-NOTE] Name-string detection avoids importing MindIEChatModel (optional dependency).
     if getattr(model_class, "__name__", "") == "MindIEChatModel":
         # Enforce max_retries constraint to prevent cascading timeouts.
         model_settings_from_config["max_retries"] = model_settings_from_config.get("max_retries", 1)
@@ -149,6 +159,8 @@ def create_chat_model(name: str | None = None, thinking_enabled: bool = False, *
 
     model_instance = model_class(**kwargs, **model_settings_from_config)
 
+    # [DL-NOTE] Tracing callbacks are attached post-instantiation; the factory is the only
+    # place models are created, so this is the correct centralization point.
     callbacks = build_tracing_callbacks()
     if callbacks:
         existing_callbacks = model_instance.callbacks or []

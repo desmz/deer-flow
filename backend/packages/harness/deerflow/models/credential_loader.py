@@ -23,9 +23,12 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # Required beta headers for Claude Code OAuth tokens
+# [DL-NOTE] OAuth tokens use a different internal auth path than standard API keys; these three beta flags unlock it.
 OAUTH_ANTHROPIC_BETAS = "oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14"
 
 
+# [DL-NOTE] `sk-ant-oat` prefix = OAuth token; standard API keys start with `sk-ant-api`.
+# Providers call this to decide whether to use Authorization: Bearer vs x-api-key and whether to inject beta headers.
 def is_oauth_token(token: str) -> bool:
     """Check if a token is a Claude Code OAuth token (not a standard API key)."""
     return isinstance(token, str) and "sk-ant-oat" in token
@@ -44,6 +47,7 @@ class ClaudeCodeCredential:
     def is_expired(self) -> bool:
         if self.expires_at <= 0:
             return False
+        # [DL-INSIGHT] expires_at is milliseconds; 60_000ms buffer prevents expiry races mid-request.
         return time.time() * 1000 > self.expires_at - 60_000  # 1 min buffer
 
 
@@ -85,6 +89,8 @@ def _load_json_file(path: Path, label: str) -> dict[str, Any] | None:
         return None
 
 
+# [DL-NOTE] FD-based secrets are more secure than env var text: the secret isn't visible in /proc/{pid}/environ.
+# Claude Code CLI may inject credentials via an open FD rather than plaintext env var.
 def _read_secret_from_file_descriptor(env_var: str) -> str | None:
     fd_value = os.getenv(env_var)
     if not fd_value:
@@ -146,6 +152,8 @@ def _extract_claude_code_credential(data: dict[str, Any], source: str) -> Claude
     return cred
 
 
+# [DL-INSIGHT] 4-level priority chain lets Claude Code CLI inject credentials in any environment:
+# env var (simplest) → FD (most secure) → override file → default file (default install location).
 def load_claude_code_credential() -> ClaudeCodeCredential | None:
     """Load OAuth credential from explicit Claude Code handoff sources.
 
@@ -205,6 +213,7 @@ def load_codex_cli_credential() -> CodexCliCredential | None:
     if not isinstance(tokens, dict):
         tokens = {}
 
+    # [DL-NOTE] Two auth.json shapes: legacy top-level `access_token`/`token`, current nested `tokens.access_token`.
     access_token = data.get("access_token") or data.get("token") or tokens.get("access_token", "")
     account_id = data.get("account_id") or tokens.get("account_id", "")
     if not access_token:

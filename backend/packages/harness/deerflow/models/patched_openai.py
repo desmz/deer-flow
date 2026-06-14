@@ -70,6 +70,8 @@ class PatchedChatOpenAI(ChatOpenAI):
         """
         # Capture the original LangChain messages *before* conversion so we can
         # access fields that the serialiser might drop.
+        # [DL-INSIGHT] Must snapshot here: parent's _get_request_payload() converts messages to dicts,
+        # at which point additional_kwargs["tool_calls"] (carrying thought_signature) is gone from the payload.
         original_messages = self._convert_input(input_).to_messages()
 
         # Obtain the base payload from the parent implementation.
@@ -82,6 +84,7 @@ class PatchedChatOpenAI(ChatOpenAI):
                 if payload_msg.get("role") == "assistant" and isinstance(orig_msg, AIMessage):
                     _restore_tool_call_signatures(payload_msg, orig_msg)
         else:
+            # [DL-WARN] Length mismatch can happen if the parent serializer merges adjacent messages.
             # Fallback: match assistant-role entries positionally against AIMessages.
             ai_messages = [m for m in original_messages if isinstance(m, AIMessage)]
             assistant_payloads = [(i, m) for i, m in enumerate(payload_messages) if m.get("role") == "assistant"]
@@ -126,7 +129,7 @@ def _restore_tool_call_signatures(payload_msg: dict, orig_msg: AIMessage) -> Non
         if raw_tc is None:
             continue
 
-        # The gateway may use either snake_case or camelCase.
+        # [DL-NOTE] Gemini gateway is inconsistent: some versions emit snake_case, others camelCase.
         sig = raw_tc.get("thought_signature") or raw_tc.get("thoughtSignature")
         if sig:
             payload_tc["thought_signature"] = sig

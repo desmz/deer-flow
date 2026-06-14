@@ -43,7 +43,7 @@ def _fix_messages(messages: list) -> list:
             fixed.append(AIMessage(content=full_text.strip() or " "))
             continue
 
-        # Wrap tool execution results in XML tags and convert to HumanMessage
+        # [DL-INSIGHT] MindIE's chat template doesn't understand the "tool" role; wrap in XML and demote to HumanMessage
         if isinstance(msg, ToolMessage):
             tool_result_text = f"<tool_response>\n{text}\n</tool_response>"
             fixed.append(HumanMessage(content=tool_result_text))
@@ -83,6 +83,7 @@ def _parse_xml_tool_call_to_dict(content: str) -> tuple[str, list[dict]]:
             continue
         function_name = html.unescape(func_match.group(1).strip())
 
+        # [DL-WARN] Nested tool blocks must be stripped from param_source first; their <parameter> tags would otherwise leak into this call's args
         # Ignore nested tool blocks when extracting parameters for this call.
         # Nested `<tool_call>` sections represent separate invocations and
         # their `<parameter>` tags must not leak into the current call args.
@@ -103,6 +104,7 @@ def _parse_xml_tool_call_to_dict(content: str) -> tuple[str, list[dict]]:
             # Attempt to deserialize string values into native Python types
             # to satisfy downstream Pydantic validation.
             parsed_value = raw_value
+            # [DL-NOTE] json.loads first (covers JSON types), ast.literal_eval fallback (covers Python-only types like True/False not in JSON format)
             if raw_value.startswith(("[", "{")) or raw_value in ("true", "false", "null") or raw_value.isdigit():
                 try:
                     parsed_value = json.loads(raw_value)
@@ -122,6 +124,7 @@ def _parse_xml_tool_call_to_dict(content: str) -> tuple[str, list[dict]]:
 
 def _iter_tool_call_blocks(content: str) -> Iterator[tuple[int, int, str]]:
     """Iterate `<tool_call>...</tool_call>` blocks and tolerate nesting."""
+    # [DL-NOTE] Depth counter instead of regex: a plain regex can't handle <tool_call> nested inside another <tool_call> block
     token_pattern = re.compile(r"</?tool_call>")
     depth = 0
     block_start = -1
@@ -151,6 +154,7 @@ def _decode_escaped_newlines_outside_fences(content: str) -> str:
     if "\\n" not in content:
         return content
 
+    # [DL-NOTE] Split on fenced blocks first; only un-escape \n outside fences so code block content is never altered
     parts = re.split(r"(```[\s\S]*?```)", content)
     for idx, part in enumerate(parts):
         if part.startswith("```"):
@@ -177,6 +181,7 @@ class MindIEChatModel(ChatOpenAI):
         write_timeout = kwargs.pop("write_timeout", 60.0)
         pool_timeout = kwargs.pop("pool_timeout", 30.0)
 
+        # [DL-NOTE] setdefault: if caller passes explicit timeout= it wins; per-component kwargs are still popped (removed from kwargs) regardless
         kwargs.setdefault(
             "timeout",
             httpx.Timeout(
@@ -224,6 +229,7 @@ class MindIEChatModel(ChatOpenAI):
                 yield chunk
             return
 
+        # [DL-INSIGHT] MindIE bug: stream=True + tools → empty choices in response; fall back to full generation and simulate streaming with fake chunks
         # Fallback for tool-enabled requests:
         # MindIE currently drops choices when stream=True and tools are present.
         # We await the full generation and yield chunks to simulate streaming.
@@ -236,6 +242,7 @@ class MindIEChatModel(ChatOpenAI):
 
             # Yield text in chunks to allow downstream UI/Markdown parsers to render smoothly
             if isinstance(content, str) and content:
+                # [DL-NOTE] 15-char fixed chunk size for simulated streaming; large enough to avoid per-char overhead, small enough for smooth rendering
                 chunk_size = 15
                 for i in range(0, len(content), chunk_size):
                     chunk_text = content[i : i + chunk_size]

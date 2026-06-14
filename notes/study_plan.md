@@ -721,11 +721,44 @@ Phase 5 — Community AIO sandbox (the remote/async alternative):
 
 **Key files:**
 
-| Path                                        | Status | Notes                                                                                   |
-| ------------------------------------------- | ------ | --------------------------------------------------------------------------------------- |
-| `backend/packages/harness/deerflow/models/` | `[ ]`  | Model factory, provider impls (Claude, OpenAI, DeepSeek, vLLM, etc.), credential loader |
-| `backend/tests/test_model_*.py`             | `[ ]`  | Model layer tests (glob pattern)                                                        |
-| `backend/tests/test_patched_*.py`           | `[ ]`  | Provider-specific patch tests (glob pattern)                                            |
+| Path                                                                | Status | Notes                                                                                   |
+| ------------------------------------------------------------------- | ------ | --------------------------------------------------------------------------------------- |
+| `backend/packages/harness/deerflow/models/__init__.py`              | `[x]`  | Package public API exports                                                              |
+| `backend/packages/harness/deerflow/models/credential_loader.py`     | `[x]`  | Per-user or global API key resolution; consumed by every provider                       |
+| `backend/packages/harness/deerflow/models/patched_openai.py`        | `[x]`  | OpenAI compatibility fixes applied to the base client                                   |
+| `backend/packages/harness/deerflow/models/patched_deepseek.py`      | `[x]`  | DeepSeek-specific patches layered over the OpenAI base                                  |
+| `backend/packages/harness/deerflow/models/patched_minimax.py`       | `[x]`  | Minimax-specific patches                                                                |
+| `backend/packages/harness/deerflow/models/claude_provider.py`       | `[x]`  | Anthropic/Claude provider; prompt caching and OAuth billing support                     |
+| `backend/packages/harness/deerflow/models/vllm_provider.py`         | `[x]`  | Self-hosted vLLM provider                                                               |
+| `backend/packages/harness/deerflow/models/mindie_provider.py`       | `[x]`  | Huawei Mindie hardware-specific provider                                                |
+| `backend/packages/harness/deerflow/models/openai_codex_provider.py` | `[x]`  | OpenAI Codex provider                                                                   |
+| `backend/packages/harness/deerflow/models/factory.py`               | `[x]`  | Model instance factory; top-level coordinator that selects and constructs providers     |
+| `backend/packages/harness/deerflow/config/model_config.py`          | `[x]`  | Model configuration shapes; provider selection, credentials, and thinking-mode settings |
+
+**Study order:**
+
+Phase 1 — Package API and credential primitive (read first so names are familiar):
+
+1. `models/__init__.py` — package public exports; confirms the surface area before reading any implementation
+2. `models/credential_loader.py` — per-user or global API key resolution; read before any provider since every provider calls into this
+
+Phase 2 — OpenAI-compatible patches (the base layer most providers share):
+
+3. `models/patched_openai.py` — OpenAI compatibility fixes applied to the base client; read before the implementations that extend it
+4. `models/patched_deepseek.py` — DeepSeek-specific patches; depends on patched_openai as its base
+5. `models/patched_minimax.py` — Minimax-specific patches; same pattern as patched_deepseek
+
+Phase 3 — Provider implementations (concrete LLM integrations):
+
+6. `models/claude_provider.py` — Anthropic/Claude; read first among providers as it has the most distinct pattern (prompt caching, OAuth billing)
+7. `models/vllm_provider.py` — self-hosted vLLM; read after claude_provider to contrast self-hosted vs managed approach
+8. `models/mindie_provider.py` — Huawei Mindie; hardware-specific provider
+9. `models/openai_codex_provider.py` — Codex; a specialised variant of the OpenAI provider
+
+Phase 4 — Factory and config (assembly and wiring):
+
+10. `config/model_config.py` — model configuration shapes; provider selection, credentials, and thinking-mode settings; read before factory so the input shapes are known
+11. `models/factory.py` — model instance factory; ties all providers together; read last so all provider patterns are already familiar
 
 ---
 
@@ -1082,7 +1115,7 @@ Phase 5 — Community AIO sandbox (the remote/async alternative):
 | 13      | Backend: Skills System           | [~]    | `modules/13a-skills-primitives-storage.md` (phases 1–2: types, `__init__`, storage), `modules/13b-skills-processing-install.md` (phases 3–4: parser, validation, security_scanner, tool_policy, installer, skill_evolution_config)                                                                                                                                        |
 | 14      | Backend: MCP Integration         | [x]    | `modules/14-mcp-integration.md`                                                                                                                                                                                                                                                                                                                                           |
 | 15      | Backend: Sandbox                 | [x]    | `modules/15a-sandbox-primitives.md` (phase 1: exceptions, sandbox interface, security gate, file lock), `modules/15b-local-sandbox.md` (phase 2: list_dir, LocalSandbox, LocalSandboxProvider), `modules/15c-sandbox-search-tools.md` (phase 3: search.py, tools.py), `modules/15d-sandbox-provider-middleware.md` (phase 4: sandbox_provider.py, middleware.py), `modules/15e-aio-sandbox.md` (phase 5: AIO community sandbox — sandbox_info, backend, local_backend, remote_backend, aio_sandbox, aio_sandbox_provider) |
-| 16      | Backend: Model Layer             | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
+| 16      | Backend: Model Layer             | [x]    | `modules/16a-model-layer-credential-patches.md` (phases 1–2: `__init__`, credential_loader, patched_openai, patched_deepseek, patched_minimax), `modules/16b-model-layer-providers.md` (phase 3: claude_provider, vllm_provider, mindie_provider, openai_codex_provider), `modules/16c-model-layer-factory-config.md` (phase 4: config/model_config.py, models/factory.py) |
 | 17      | Backend: Config System           | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
 | 18      | Backend: Persistence Layer       | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
 | 19      | Backend: Channels                | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
