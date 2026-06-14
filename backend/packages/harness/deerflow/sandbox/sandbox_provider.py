@@ -8,6 +8,8 @@ from deerflow.sandbox.sandbox import Sandbox
 class SandboxProvider(ABC):
     """Abstract base class for sandbox providers"""
 
+    # [DL-NOTE] Read by the uploads router to decide if files need explicit sandbox sync.
+    # True = host dirs are mounted into sandbox (already visible); False = must push via sandbox API.
     uses_thread_data_mounts: bool = False
 
     @abstractmethod
@@ -38,10 +40,13 @@ class SandboxProvider(ABC):
         pass
 
     def reset(self) -> None:
+        # [DL-INSIGHT] Distinct from release(): resets provider-level cached state (e.g. module singleton),
+        # not individual sandbox instances. Called before replacing the global provider singleton.
         """Clear cached state that survives provider instance replacement."""
         pass
 
 
+# [DL-NOTE] Process-level singleton; lazily instantiated by get_sandbox_provider().
 _default_sandbox_provider: SandboxProvider | None = None
 
 
@@ -57,6 +62,8 @@ def get_sandbox_provider(**kwargs) -> SandboxProvider:
     global _default_sandbox_provider
     if _default_sandbox_provider is None:
         config = get_app_config()
+        # [DL-INSIGHT] reflection pattern: config.sandbox.use is a class path string (e.g.
+        # "deerflow.sandbox.local:LocalSandboxProvider"), resolved at runtime via resolve_class().
         cls = resolve_class(config.sandbox.use, SandboxProvider)
         _default_sandbox_provider = cls(**kwargs)
     return _default_sandbox_provider
@@ -79,6 +86,8 @@ def reset_sandbox_provider() -> None:
     """
     global _default_sandbox_provider
     if _default_sandbox_provider is not None:
+        # [DL-WARN] reset() must be called BEFORE nulling the global — otherwise the reference
+        # is lost and the inner singleton (e.g. LocalSandboxProvider._singleton) is never cleared.
         _default_sandbox_provider.reset()
         _default_sandbox_provider = None
 
@@ -92,11 +101,14 @@ def shutdown_sandbox_provider() -> None:
     """
     global _default_sandbox_provider
     if _default_sandbox_provider is not None:
+        # [DL-NOTE] shutdown() is not part of the ABC; duck-typed because only resource-heavy
+        # providers (AioSandboxProvider) implement it; LocalSandboxProvider uses reset() instead.
         if hasattr(_default_sandbox_provider, "shutdown"):
             _default_sandbox_provider.shutdown()
         _default_sandbox_provider = None
 
 
+# [DL-NOTE] Test injection point — allows tests to swap in a mock provider without touching config.
 def set_sandbox_provider(provider: SandboxProvider) -> None:
     """Set a custom sandbox provider instance.
 

@@ -2,7 +2,8 @@ from abc import ABC, abstractmethod
 
 from deerflow.sandbox.search import GrepMatch
 
-
+# [DL-INSIGHT] 7-method interface satisfied by both LocalSandbox (filesystem) and AioSandbox (Docker/remote).
+# Virtual path translation (agent's /mnt/user-data/ → physical host paths) lives above this layer in sandbox/tools.py.
 class Sandbox(ABC):
     """Abstract base class for sandbox environments"""
 
@@ -63,6 +64,8 @@ class Sandbox(ABC):
         """
         pass
 
+    # [DL-NOTE] Returns (matches, truncated): the bool is an explicit overflow signal so the caller can inform
+    # the user results were cut off, rather than silently returning a partial list. Same pattern on grep().
     @abstractmethod
     def glob(self, path: str, pattern: str, *, include_dirs: bool = False, max_results: int = 200) -> tuple[list[str], bool]:
         """Find paths that match a glob pattern under a root directory."""
@@ -82,6 +85,8 @@ class Sandbox(ABC):
         """Search for matches inside text files under a directory."""
         pass
 
+    # [DL-NOTE] Binary counterpart to write_file (which takes str). Intended for raw image/binary tool outputs
+    # where encoding to UTF-8 text would corrupt the data.
     @abstractmethod
     def update_file(self, path: str, content: bytes) -> None:
         """Update a file with binary content.

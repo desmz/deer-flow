@@ -7,10 +7,14 @@ from deerflow.sandbox.sandbox_provider import SandboxProvider
 
 logger = logging.getLogger(__name__)
 
+# [DL-INSIGHT] Module-level singleton survives provider instance replacement.
+# reset() must explicitly clear this or stale path mappings persist across config reloads (see regression test_reset_sandbox_provider_clears_local_singleton).
 _singleton: LocalSandbox | None = None
 
 
 class LocalSandboxProvider(SandboxProvider):
+    # [DL-NOTE] Tells uploads router to write files directly to the thread dir on the host filesystem.
+    # When False (AioSandboxProvider), uploads are pushed through the sandbox write API into the container instead.
     uses_thread_data_mounts = True
 
     def __init__(self):
@@ -48,6 +52,7 @@ class LocalSandboxProvider(SandboxProvider):
                 )
 
             # Map custom mounts from sandbox config
+            # [DL-NOTE] These three container paths are reserved: user config cannot shadow them with custom mounts.
             _RESERVED_CONTAINER_PREFIXES = [container_path, "/mnt/acp-workspace", "/mnt/user-data"]
             sandbox_config = config.sandbox
             if sandbox_config and sandbox_config.mounts:
@@ -99,6 +104,8 @@ class LocalSandboxProvider(SandboxProvider):
 
         return mappings
 
+    # [DL-INSIGHT] thread_id is ignored — all threads share one LocalSandbox singleton with fixed path mappings.
+    # Per-thread /mnt/user-data translation is handled in tools.py (replace_virtual_path), not via path_mappings here.
     def acquire(self, thread_id: str | None = None) -> str:
         global _singleton
         if _singleton is None:
@@ -112,6 +119,8 @@ class LocalSandboxProvider(SandboxProvider):
             return _singleton
         return None
 
+    # [DL-NOTE] No-op by design: the singleton is reused across all threads and turns.
+    # AioSandboxProvider.release() stops a Docker container here; LocalSandbox has nothing to tear down.
     def release(self, sandbox_id: str) -> None:
         # LocalSandbox uses singleton pattern - no cleanup needed.
         # Note: This method is intentionally not called by SandboxMiddleware

@@ -21,6 +21,9 @@ from .sandbox_info import SandboxInfo
 logger = logging.getLogger(__name__)
 
 
+# [DL-NOTE] Docker returns nanosecond-precision timestamps with a trailing Z.
+# Python's fromisoformat (pre-3.11) accepts at most microseconds and rejects Z,
+# so the string must be normalized before parsing. 0.0 is the "unknown age" sentinel.
 def _parse_docker_timestamp(raw: str) -> float:
     """Parse Docker's ISO 8601 timestamp into a Unix epoch float.
 
@@ -67,6 +70,8 @@ def _extract_host_port(inspect_entry: dict, container_port: int) -> int | None:
     return None
 
 
+# [DL-INSIGHT] Docker uses --mount (not -v) to avoid Windows drive-letter ambiguity
+# where ':' is both drive separator and volume separator (e.g. D:/path).
 def _format_container_mount(runtime: str, host_path: str, container_path: str, read_only: bool) -> list[str]:
     """Format a bind-mount argument for the selected runtime.
 
@@ -87,6 +92,8 @@ def _format_container_mount(runtime: str, host_path: str, container_path: str, r
     return ["-v", mount_spec]
 
 
+# [DL-NOTE] Prevents env var values (API keys, secrets) from leaking into log output.
+# Handles both "-e KEY=VALUE" (two-token) and "--env=KEY=VALUE" (one-token) forms.
 def _redact_container_command_for_log(cmd: list[str]) -> list[str]:
     """Return a Docker/Container command with environment values redacted."""
     redacted: list[str] = []
@@ -265,6 +272,11 @@ class LocalContainerBackend(SandboxBackend):
         _next_start = self._base_port
         container_id: str | None = None
         port: int = 0
+        # [DL-INSIGHT] Two race conditions handled here:
+        # 1. Port race: Docker's port release is async; get_free_port may return a port
+        #    Docker still considers allocated. Retry with next port on that error.
+        # 2. Name race: another process already started this deterministic container.
+        #    Fall through to discover() to adopt it rather than failing.
         for _attempt in range(10):
             port = get_free_port(start_port=_next_start)
             try:
@@ -373,6 +385,8 @@ class LocalContainerBackend(SandboxBackend):
         sandbox_url) so that startup reconciliation can adopt orphans
         regardless of their port state.
         """
+        # [DL-NOTE] Total cost: 2 subprocess calls (ps + batched inspect) regardless of N containers.
+        # Naive approach would cost 2N+1. _batch_inspect() passes all names in one docker inspect call.
         # Step 1: enumerate container names via docker ps
         try:
             result = subprocess.run(
@@ -471,6 +485,8 @@ class LocalContainerBackend(SandboxBackend):
 
         out: dict[str, tuple[float, int | None]] = {}
         for entry in payload:
+            # [DL-WARN] Docker inspect Name has a leading "/" that must be stripped before
+            # matching against container names returned by docker ps.
             # ``Name`` is prefixed with ``/`` in the docker inspect response
             name = (entry.get("Name") or "").lstrip("/")
             if not name:
@@ -504,6 +520,8 @@ class LocalContainerBackend(SandboxBackend):
         cmd = [self._runtime, "run"]
 
         # Docker-specific security options
+        # [DL-INSIGHT] seccomp=unconfined lets the sandbox run ptrace and other restricted
+        # syscalls needed to execute arbitrary user code. Apple Container has its own isolation.
         if self._runtime == "docker":
             cmd.extend(["--security-opt", "seccomp=unconfined"])
 

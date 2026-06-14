@@ -13,6 +13,8 @@ from .sandbox_info import SandboxInfo
 logger = logging.getLogger(__name__)
 
 
+# [DL-NOTE] Module-level (not on SandboxBackend) so it can be imported by both
+# LocalContainerBackend (timeout=5) and AioSandboxProvider (timeout=60) independently.
 def wait_for_sandbox_ready(sandbox_url: str, timeout: int = 30) -> bool:
     """Poll sandbox health endpoint until ready or timeout.
 
@@ -67,6 +69,8 @@ class SandboxBackend(ABC):
         """
         ...
 
+    # [DL-INSIGHT] is_alive is a lightweight backend probe (Docker inspect / K8s ping),
+    # distinct from wait_for_sandbox_ready which blocks on HTTP. Used for quick GC decisions.
     @abstractmethod
     def is_alive(self, info: SandboxInfo) -> bool:
         """Quick check whether a sandbox is still alive.
@@ -82,6 +86,8 @@ class SandboxBackend(ABC):
         """
         ...
 
+    # [DL-INSIGHT] discover() is the cross-process reconnection path — process B finds a container
+    # started by process A using the deterministic sandbox_id, avoiding duplicate creation.
     @abstractmethod
     def discover(self, sandbox_id: str) -> SandboxInfo | None:
         """Try to discover an existing sandbox by its deterministic ID.
@@ -97,6 +103,8 @@ class SandboxBackend(ABC):
         """
         ...
 
+    # [DL-NOTE] Default [] is for hypothetical backends that truly cannot enumerate running instances.
+    # Both concrete backends (LocalContainerBackend, RemoteSandboxBackend) override this method.
     def list_running(self) -> list[SandboxInfo]:
         """Enumerate all running sandboxes managed by this backend.
 

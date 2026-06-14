@@ -97,7 +97,9 @@ class AioSandboxProvider(SandboxProvider):
         self._thread_sandboxes: dict[str, str] = {}  # thread_id -> sandbox_id
         self._thread_locks: dict[str, threading.Lock] = {}  # thread_id -> in-process lock
         self._last_activity: dict[str, float] = {}  # sandbox_id -> last activity timestamp
-        # Warm pool: released sandboxes whose containers are still running.
+        # [DL-INSIGHT] Two-tier container pool: _sandboxes = actively in use (no eviction),
+        # _warm_pool = released but still running (eligible for fast reclaim or eviction).
+        # release() moves active → warm; destroy() stops the container and removes from both.
         # Maps sandbox_id -> (SandboxInfo, release_timestamp).
         # Containers here can be reclaimed quickly (no cold-start) or destroyed
         # when replicas capacity is exhausted.
@@ -191,6 +193,9 @@ class AioSandboxProvider(SandboxProvider):
 
     # ── Startup reconciliation ────────────────────────────────────────────
 
+    # [DL-INSIGHT] Closes the memory-loss gap: if the process crashes/restarts, containers
+    # keep running but in-process state is gone. This sweep re-adopts them into the warm
+    # pool so they're either reclaimed or GC'd by idle timeout, never leaked forever.
     def _reconcile_orphans(self) -> None:
         """Reconcile orphaned containers left by previous process lifecycles.
 
@@ -243,6 +248,8 @@ class AioSandboxProvider(SandboxProvider):
         Ensures all processes derive the same sandbox_id for a given thread,
         enabling cross-process sandbox discovery without shared memory.
         """
+        # [DL-INSIGHT] SHA-256 first 8 hex chars = 32-bit space. Any process with the same
+        # thread_id derives the same container name — no shared state file needed for discovery.
         return hashlib.sha256(thread_id.encode()).hexdigest()[:8]
 
     # ── Mount helpers ────────────────────────────────────────────────────
@@ -344,6 +351,9 @@ class AioSandboxProvider(SandboxProvider):
                     del self._warm_pool[sandbox_id]
                     logger.info(f"Warm-pool sandbox {sandbox_id} idle for {warm_duration:.1f}s, marking for destroy")
 
+        # [DL-INSIGHT] Two-phase destroy for active sandboxes: snapshot under lock, then
+        # re-verify under lock before acting. A sandbox may have been re-acquired between
+        # the two checks — destroying it then would kill a live thread's execution environment.
         # Destroy active sandboxes (re-verify still idle before acting)
         for sandbox_id in active_to_destroy:
             try:
@@ -496,6 +506,9 @@ class AioSandboxProvider(SandboxProvider):
         paths.ensure_thread_dirs(thread_id, user_id=user_id)
         lock_path = paths.thread_dir(thread_id, user_id=user_id) / f"{sandbox_id}.lock"
 
+        # [DL-INSIGHT] Three-layer acquire: (1) in-process cache, (2) warm pool, (3) here.
+        # File lock (fcntl/msvcrt) serializes cross-process races for the same thread_id.
+        # After acquiring, re-check caches: another in-process thread may have won while waiting.
         with open(lock_path, "a", encoding="utf-8") as lock_file:
             locked = False
             try:
@@ -572,8 +585,9 @@ class AioSandboxProvider(SandboxProvider):
         """
         extra_mounts = self._get_extra_mounts(thread_id)
 
-        # Enforce replicas: only warm-pool containers count toward eviction budget.
-        # Active sandboxes are in use by live threads and must not be forcibly stopped.
+        # [DL-NOTE] Replicas is a soft cap. Eviction only targets the warm pool (idle containers).
+        # Active sandboxes are never force-stopped — if all slots are active, the cap is exceeded
+        # with a warning rather than killing a live thread's execution environment.
         replicas = self._config.get("replicas", DEFAULT_REPLICAS)
         with self._lock:
             total = len(self._sandboxes) + len(self._warm_pool)

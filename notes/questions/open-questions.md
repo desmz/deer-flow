@@ -184,3 +184,12 @@ Running log of unresolved questions across all study sections.
 - **`proc` is unpacked but never used**: `spawn_agent_process` yields `(conn, proc)` but `proc` is never referenced inside the `async with` block. Is it available for sending SIGTERM on a manual timeout? The async context manager owns the process lifetime, but explicit cancellation hooks may be needed for long-running ACP agents.
 - **No timeout on `conn.prompt()`**: The ACP `prompt()` call has no explicit timeout. A misbehaving ACP agent (or a long coding task) could block indefinitely. Is there a timeout at the ACP protocol level, or does the outer LangGraph run timeout apply here?
 - **MCP passthrough format mismatch risk**: `_build_acp_mcp_servers()` converts DeerFlow's name→config dict into ACP's list-with-`name` field format. If the ACP protocol version bumps and renames fields (e.g., `type` → `transport`), this conversion silently produces invalid payloads. Is there an ACP version check?
+
+---
+
+## Section 15 — Backend: Sandbox (Phase 1 — Primitives)
+
+- **`execute_command` stdout/stderr merging**: Does `LocalSandbox.execute_command` genuinely merge stdout and stderr into one string, or does it capture them separately and pick one? The `Sandbox` interface docstring says "standard or error output" — ambiguous. Verify in `local/local_sandbox.py`.
+- **`str_replace` lock scope**: The lock in `tools.py` is acquired around the `str_replace` operation (line 1564). Does it cover the entire read-modify-write sequence, or only the final write? A TOCTOU race exists if two threads both read before either writes — verify in `tools.py` Phase 3.
+- **`update_file` callers**: What calls `update_file` in practice? The interface defines it for binary writes, but no callsite was found in Phase 1. Likely surfaced in Phase 3 (tools) or Phase 5 (AIO sandbox).
+- **`id(sandbox)` key collision risk**: `get_file_operation_lock_key` falls back to `f"instance:{id(sandbox)}"` for sandboxes with no `id` attribute. If a sandbox is GC'd and a new one allocated at the same memory address, two distinct sandbox instances could share a lock key. Only a real risk if anonymous sandboxes are used in production (they appear to be test-only), but worth confirming.

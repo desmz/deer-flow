@@ -16,9 +16,15 @@ class SandboxInfo:
     """
 
     sandbox_id: str
+    # [DL-INSIGHT] sandbox_url is the single reconnection token — both processes (Gateway + LangGraph)
+    # use this URL to open an HTTP connection to the sandbox container.
     sandbox_url: str  # e.g. http://localhost:8080 or http://k3s:30001
+    # [DL-NOTE] container_name/container_id are non-None only for LocalBackend (Docker on the same host);
+    # RemoteBackend (K8s via Provisioner) uses sandbox_url directly and leaves these None.
     container_name: str | None = None  # Only for local container backend
     container_id: str | None = None  # Only for local container backend
+    # [DL-NOTE] created_at is used by the orphan reconciliation sweep to GC stale sandboxes.
+    # See: test_sandbox_orphan_reconciliation.py for the age-based eviction logic.
     created_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict:
@@ -34,6 +40,7 @@ class SandboxInfo:
     def from_dict(cls, data: dict) -> SandboxInfo:
         return cls(
             sandbox_id=data["sandbox_id"],
+            # [DL-NOTE] Backward compat: field was renamed from "base_url" to "sandbox_url".
             sandbox_url=data.get("sandbox_url", data.get("base_url", "")),
             container_name=data.get("container_name"),
             container_id=data.get("container_id"),

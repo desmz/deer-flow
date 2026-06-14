@@ -1,9 +1,11 @@
 """Sandbox-related exceptions with structured error information."""
 
-
+# [DL-INSIGHT] Two-level hierarchy: SandboxError → command/file/runtime/notfound; SandboxFileError → permission/notfound.
+# Mirrors Python's built-in OSError tree but scoped to sandbox so callers can distinguish OS failures from sandbox-level ones.
 class SandboxError(Exception):
     """Base exception for all sandbox-related errors."""
 
+    # [DL-NOTE] details dict accumulates structured context per subclass; __str__ flattens it to key=value for log readability.
     def __init__(self, message: str, details: dict | None = None):
         super().__init__(message)
         self.message = message
@@ -25,6 +27,8 @@ class SandboxNotFoundError(SandboxError):
         self.sandbox_id = sandbox_id
 
 
+# [DL-NOTE] No custom __init__: raised when the sandbox *infrastructure* is misconfigured, not when a specific instance is missing.
+# Use SandboxNotFoundError when a sandbox_id lookup fails; SandboxRuntimeError when the system itself won't start.
 class SandboxRuntimeError(SandboxError):
     """Raised when sandbox runtime is not available or misconfigured."""
 
@@ -34,6 +38,7 @@ class SandboxRuntimeError(SandboxError):
 class SandboxCommandError(SandboxError):
     """Raised when a command execution fails in the sandbox."""
 
+    # [DL-NOTE] command is truncated to 100 chars in details to prevent log flooding; full command is preserved in self.command.
     def __init__(self, message: str, command: str | None = None, exit_code: int | None = None):
         details = {}
         if command:

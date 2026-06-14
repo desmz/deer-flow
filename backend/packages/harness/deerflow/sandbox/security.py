@@ -2,6 +2,8 @@
 
 from deerflow.config import get_app_config
 
+# [DL-INSIGHT] Core security model: LocalSandboxProvider executes on the host with no isolation boundary.
+# Bash is OFF by default for local; AioSandboxProvider (Docker) is always allowed. Opt-in: sandbox.allow_host_bash: true.
 _LOCAL_SANDBOX_PROVIDER_MARKERS = (
     "deerflow.sandbox.local:LocalSandboxProvider",
     "deerflow.sandbox.local.local_sandbox_provider:LocalSandboxProvider",
@@ -20,6 +22,8 @@ LOCAL_BASH_SUBAGENT_DISABLED_MESSAGE = (
 )
 
 
+# [DL-NOTE] Handles two canonical module path forms plus an endswith fallback — defensive detection so
+# the security gate fires even for unusual config.yaml class path formatting.
 def uses_local_sandbox_provider(config=None) -> bool:
     """Return True when the active sandbox provider is the host-local provider."""
     if config is None:
@@ -32,6 +36,8 @@ def uses_local_sandbox_provider(config=None) -> bool:
     return sandbox_use.endswith(":LocalSandboxProvider") and "deerflow.sandbox.local" in sandbox_use
 
 
+# [DL-NOTE] Dual enforcement: this is called in tools/tools.py (hides bash from the tool registry) AND
+# in sandbox/tools.py (blocks execution inside the tool itself) — defense in depth.
 def is_host_bash_allowed(config=None) -> bool:
     """Return whether host bash execution is explicitly allowed."""
     if config is None:

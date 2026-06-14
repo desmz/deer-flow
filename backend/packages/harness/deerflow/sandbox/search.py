@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+# [DL-NOTE] Intentionally cross-ecosystem: covers Python (.venv, __pycache__), JS (node_modules, .next),
+# Java (target), VCS (.git, .svn), IDEs (.idea, .vscode), and OS artifacts (.DS_Store).
 IGNORE_PATTERNS = [
     ".git",
     ".svn",
@@ -74,10 +76,14 @@ def should_ignore_name(name: str) -> bool:
     return False
 
 
+# [DL-NOTE] Checks every path segment, not just the filename — `foo/node_modules/bar.js` is rejected
+# at the `node_modules` segment. Used by AioSandbox to filter remote file listings from the backend.
 def should_ignore_path(path: str) -> bool:
     return any(should_ignore_name(segment) for segment in path.replace("\\", "/").split("/") if segment)
 
 
+# [DL-INSIGHT] PurePosixPath.match() anchors from the right, so "*.py" matches "foo/bar.py".
+# The `**/` branch is a fallback: strips the prefix so "**/*.py" also matches top-level files.
 def path_matches(pattern: str, rel_path: str) -> bool:
     path = PurePosixPath(rel_path)
     if path.match(pattern):
@@ -113,6 +119,8 @@ def find_glob_matches(root: Path, pattern: str, *, include_dirs: bool = False, m
         raise NotADirectoryError(root)
 
     for current_root, dirs, files in os.walk(root):
+        # [DL-INSIGHT] In-place slice mutation `dirs[:] = ...` is required; `dirs = [...]` would not
+        # suppress os.walk recursion into ignored directories like node_modules.
         dirs[:] = [name for name in dirs if not should_ignore_name(name)]
         # root is already resolved; os.walk builds current_root by joining under root,
         # so relative_to() works without an extra stat()/resolve() per directory.
@@ -164,6 +172,8 @@ def find_grep_matches(
     flags = 0 if case_sensitive else re.IGNORECASE
     regex = re.compile(regex_source, flags)
 
+    # [DL-NOTE] Minified JS/CSS files can be a single line of hundreds of KB; a pathological
+    # regex on such a line causes catastrophic backtracking. 10× the summary length is the heuristic.
     # Skip lines longer than this to prevent ReDoS on minified / no-newline files.
     _max_line_chars = line_summary_length * 10
 
@@ -182,6 +192,8 @@ def find_grep_matches(
                 continue
 
             try:
+                # [DL-WARN] Two-layer path-traversal guard: skip symlinks entirely, then verify
+                # the resolved path stays within root (belt-and-suspenders against `../` tricks).
                 if candidate_path.is_symlink():
                     continue
                 file_path = candidate_path.resolve()

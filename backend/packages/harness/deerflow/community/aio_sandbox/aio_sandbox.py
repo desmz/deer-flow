@@ -11,6 +11,8 @@ from deerflow.sandbox.search import GrepMatch, path_matches, should_ignore_path,
 
 logger = logging.getLogger(__name__)
 
+# [DL-WARN] String match against an internal SDK error message — fragile if agent_sandbox SDK changes.
+# Used to detect cross-process session corruption that the in-process lock cannot prevent.
 _ERROR_OBSERVATION_SIGNATURE = "'ErrorObservation' object has no attribute 'exit_code'"
 
 
@@ -34,6 +36,9 @@ class AioSandbox(Sandbox):
         self._base_url = base_url
         self._client = AioSandboxClient(base_url=base_url, timeout=600)
         self._home_dir = home_dir
+        # [DL-INSIGHT] The AIO sandbox container runs a single persistent shell session.
+        # Concurrent exec_command calls corrupt it (session state gets interleaved).
+        # The lock serializes all shell operations within this process.
         self._lock = threading.Lock()
 
     @property
@@ -76,6 +81,8 @@ class AioSandbox(Sandbox):
                 output = result.data.output if result.data else ""
 
                 if output and _ERROR_OBSERVATION_SIGNATURE in output:
+                    # [DL-INSIGHT] The lock prevents same-process corruption but not cross-process.
+                    # A fresh session UUID forces the SDK to start a new shell, clearing the corrupt state.
                     logger.warning("ErrorObservation detected in sandbox output, retrying with a fresh session")
                     fresh_id = str(uuid.uuid4())
                     result = self._client.shell.exec_command(command=command, id=fresh_id, no_change_timeout=self._DEFAULT_NO_CHANGE_TIMEOUT)
@@ -114,6 +121,8 @@ class AioSandbox(Sandbox):
         """
         with self._lock:
             try:
+                # [DL-NOTE] Implemented via shell exec (find), not a file API call — the AIO
+                # client has no native list_dir; the find command is the reliable fallback.
                 result = self._client.shell.exec_command(command=f"find {shlex.quote(path)} -maxdepth {max_depth} -type f -o -type d 2>/dev/null | head -500", no_change_timeout=self._DEFAULT_NO_CHANGE_TIMEOUT)
                 output = result.data.output if result.data else ""
                 if output:
@@ -133,6 +142,8 @@ class AioSandbox(Sandbox):
         """
         with self._lock:
             try:
+                # [DL-WARN] Append is read-then-write: not atomic. The lock serializes same-process
+                # concurrent writes, but cross-process appends can still race on the same file.
                 if append:
                     existing = self.read_file(path)
                     if not existing.startswith("Error:"):
@@ -180,9 +191,8 @@ class AioSandbox(Sandbox):
         import re as _re
 
         regex_source = _re.escape(pattern) if literal else pattern
-        # Validate the pattern locally so an invalid regex raises re.error
-        # (caught by grep_tool's except re.error handler) rather than a
-        # generic remote API error.
+        # [DL-INSIGHT] Compile the regex locally first so invalid patterns raise re.error
+        # (which grep_tool catches by type) rather than an opaque remote API error.
         _re.compile(regex_source, 0 if case_sensitive else _re.IGNORECASE)
         regex = regex_source if case_sensitive else f"(?i){regex_source}"
 

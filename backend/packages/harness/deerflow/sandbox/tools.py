@@ -78,6 +78,8 @@ _SHELL_REDIRECTION_OPERATORS = {
 }
 
 
+# [DL-NOTE] Function-attribute caching: results stored on the function object itself (`fn._cached`).
+# Only successful loads are cached; failures return without caching so the next call can retry.
 def _get_skills_container_path() -> str:
     """Get the skills container path from config, with fallback to default.
 
@@ -455,6 +457,8 @@ def replace_virtual_path(path: str, thread_data: ThreadDataState | None) -> str:
     if not mappings:
         return path
 
+    # [DL-NOTE] Longest-prefix-first prevents `/mnt/user-data` from matching before
+    # `/mnt/user-data/workspace`, which would corrupt the resolved path.
     # Longest-prefix-first replacement with segment-boundary checks.
     for virtual_base, actual_base in sorted(mappings.items(), key=lambda item: len(item[0]), reverse=True):
         if path == virtual_base:
@@ -499,6 +503,9 @@ def _thread_actual_to_virtual_mappings(thread_data: ThreadDataState) -> dict[str
     return {actual: virtual for virtual, actual in _thread_virtual_to_actual_mappings(thread_data).items()}
 
 
+# [DL-INSIGHT] Bidirectional path translation: `replace_virtual_path` translates virtual→physical
+# before execution; `mask_local_paths_in_output` does physical→virtual on the result so the
+# agent never sees host filesystem layout, regardless of what the command or error message prints.
 def mask_local_paths_in_output(output: str, thread_data: ThreadDataState | None) -> str:
     """Mask host absolute paths from local sandbox output using virtual paths.
 
@@ -888,6 +895,8 @@ def resolve_and_validate_user_data_path(path: str, thread_data: ThreadDataState)
     return _resolve_and_validate_user_data_path(path, thread_data)
 
 
+# [DL-WARN] Best-effort guard only — not a security boundary. The local sandbox runs commands
+# directly on the host; this validation exists to catch accidents, not to contain adversarial agents.
 def validate_local_bash_command_paths(command: str, thread_data: ThreadDataState | None) -> None:
     """Validate absolute paths in local-sandbox bash commands.
 
@@ -1048,6 +1057,8 @@ def sandbox_from_runtime(runtime: Runtime | None = None) -> Sandbox:
     return sandbox
 
 
+# [DL-NOTE] Lazy acquisition: if SandboxMiddleware hasn't run (e.g. subagent context without
+# a full middleware stack), the first tool call acquires the sandbox and writes it into runtime.state.
 def ensure_sandbox_initialized(runtime: Runtime | None = None) -> Sandbox:
     """Ensure sandbox is initialized, acquiring lazily if needed.
 
@@ -1144,6 +1155,8 @@ def ensure_thread_directories_exist(runtime: Runtime | None) -> None:
     runtime.state["thread_directories_created"] = True
 
 
+# [DL-NOTE] Middle-truncate (not head or tail) because stderr/stdout interleaving is
+# non-deterministic — errors can appear at either end of the output buffer.
 def _truncate_bash_output(output: str, max_chars: int) -> str:
     """Middle-truncate bash output, preserving head and tail (50/50 split).
 

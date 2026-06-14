@@ -27,6 +27,8 @@ from .sandbox_info import SandboxInfo
 logger = logging.getLogger(__name__)
 
 
+# [DL-INSIGHT] This backend is a pure HTTP facade over the provisioner service.
+# All container knowledge lives in the provisioner; this class never calls Docker directly.
 class RemoteSandboxBackend(SandboxBackend):
     """Backend that delegates sandbox lifecycle to the provisioner service.
 
@@ -84,6 +86,8 @@ class RemoteSandboxBackend(SandboxBackend):
         """
         return self._provisioner_discover(sandbox_id)
 
+    # [DL-NOTE] Overrides the parent's no-op default. Without this override, a process
+    # restart would permanently orphan all K8s Pods (idle checker is in-process only).
     def list_running(self) -> list[SandboxInfo]:
         """Return all sandboxes currently managed by the provisioner.
 
@@ -132,6 +136,9 @@ class RemoteSandboxBackend(SandboxBackend):
 
     def _provisioner_create(self, thread_id: str, sandbox_id: str, extra_mounts: list[tuple[str, str, bool]] | None = None) -> SandboxInfo:
         """POST /api/sandboxes → create Pod + Service."""
+        # [DL-NOTE] extra_mounts is accepted by the interface but not forwarded here.
+        # The K8s provisioner owns volume configuration (PVs, ConfigMaps); mounts are not
+        # caller-driven in the remote deployment model.
         try:
             resp = requests.post(
                 f"{self._provisioner_url}/api/sandboxes",
@@ -152,6 +159,8 @@ class RemoteSandboxBackend(SandboxBackend):
             logger.error(f"Provisioner create failed for {sandbox_id}: {exc}")
             raise RuntimeError(f"Provisioner create failed: {exc}") from exc
 
+    # [DL-NOTE] destroy is best-effort: warns on failure but never raises.
+    # A failed destroy leaves a K8s Pod running; the orphan reconciler will GC it on next startup.
     def _provisioner_destroy(self, sandbox_id: str) -> None:
         """DELETE /api/sandboxes/{sandbox_id} → destroy Pod + Service."""
         try:
@@ -180,6 +189,9 @@ class RemoteSandboxBackend(SandboxBackend):
         except requests.RequestException:
             return False
 
+    # [DL-INSIGHT] _provisioner_is_alive and _provisioner_discover hit the same endpoint
+    # but differ in intent: is_alive checks status=="Running" (bool), discover returns
+    # SandboxInfo on success and explicitly treats 404 as None (not an error).
     def _provisioner_discover(self, sandbox_id: str) -> SandboxInfo | None:
         """GET /api/sandboxes/{sandbox_id} → discover existing sandbox."""
         try:

@@ -22,6 +22,7 @@ def list_dir(path: str, max_depth: int = 2) -> list[str]:
     if not root_path.is_dir():
         return result
 
+    # [DL-INSIGHT] Uses Path.relative_to() as the sandbox boundary check; ValueError means the resolved path escapes root_path.
     def _is_within_root(candidate: Path) -> bool:
         try:
             candidate.relative_to(root_path)
@@ -39,6 +40,7 @@ def list_dir(path: str, max_depth: int = 2) -> list[str]:
                 if should_ignore_name(item.name):
                     continue
 
+                # [DL-WARN] Symlink escape guard: silently drops any symlink whose resolved target lies outside root_path.
                 if item.is_symlink():
                     try:
                         item_resolved = item.resolve()
@@ -47,6 +49,7 @@ def list_dir(path: str, max_depth: int = 2) -> list[str]:
                     except OSError:
                         continue
                     post_fix = "/" if item_resolved.is_dir() else ""
+                    # [DL-NOTE] Appends the resolved target path, not the symlink name itself; symlink names are erased from the listing.
                     result.append(str(item_resolved) + post_fix)
                     continue
 
@@ -63,6 +66,8 @@ def list_dir(path: str, max_depth: int = 2) -> list[str]:
         except PermissionError:
             pass
 
+    # [DL-NOTE] Depth starts at 1, not 0; max_depth=2 yields direct children (depth 1) and their children (depth 2).
     _traverse(root_path, 1)
 
+    # [DL-WARN] this does not handle file deduplication
     return sorted(result)

@@ -646,12 +646,59 @@ Phase 1 — Bottom-up (primitives first, top-level coordinator last):
 
 **Key files:**
 
-| Path                                                       | Status | Notes                                                                         |
-| ---------------------------------------------------------- | ------ | ----------------------------------------------------------------------------- |
-| `backend/packages/harness/deerflow/sandbox/`               | `[ ]`  | Sandbox abstraction, provider, local impl, tools, middleware, security, locks |
-| `backend/packages/harness/deerflow/community/aio_sandbox/` | `[ ]`  | Remote async sandbox alternative                                              |
-| `backend/tests/test_aio_sandbox*.py`                       | `[ ]`  | AIO sandbox tests (glob pattern)                                              |
-| `backend/tests/test_sandbox_*.py`                          | `[ ]`  | Sandbox unit and security tests (glob pattern)                                |
+| Path                                                                                | Status | Notes                                                                                    |
+| ----------------------------------------------------------------------------------- | ------ | ---------------------------------------------------------------------------------------- |
+| `backend/packages/harness/deerflow/sandbox/exceptions.py`                          | `[x]`  | Sandbox-specific exception types                                                         |
+| `backend/packages/harness/deerflow/sandbox/sandbox.py`                             | `[x]`  | Sandbox interface contract; the abstraction all implementations satisfy                  |
+| `backend/packages/harness/deerflow/sandbox/security.py`                            | `[x]`  | Path and command blocklist; defines the sandbox's safety envelope                        |
+| `backend/packages/harness/deerflow/sandbox/file_operation_lock.py`                 | `[x]`  | Per-sandbox file concurrency lock                                                        |
+| `backend/packages/harness/deerflow/sandbox/search.py`                              | `[x]`  | File search within the sandbox                                                           |
+| `backend/packages/harness/deerflow/sandbox/tools.py`                               | `[x]`  | LangGraph tools: bash, ls, read_file, write_file, str_replace                            |
+| `backend/packages/harness/deerflow/sandbox/local/list_dir.py`                      | `[x]`  | Directory listing helper consumed by the local sandbox                                   |
+| `backend/packages/harness/deerflow/sandbox/local/local_sandbox.py`                 | `[x]`  | Filesystem-based sandbox implementation                                                  |
+| `backend/packages/harness/deerflow/sandbox/local/local_sandbox_provider.py`        | `[x]`  | Factory for the local sandbox                                                            |
+| `backend/packages/harness/deerflow/sandbox/sandbox_provider.py`                    | `[x]`  | Top-level provider: selects local vs AIO sandbox based on config                         |
+| `backend/packages/harness/deerflow/sandbox/middleware.py`                          | `[x]`  | SandboxMiddleware — pos 3; has both `before_agent` (acquire) and `after_agent` (release) |
+| `backend/packages/harness/deerflow/community/aio_sandbox/sandbox_info.py`          | `[x]`  | Data shapes describing sandbox metadata                                                  |
+| `backend/packages/harness/deerflow/community/aio_sandbox/backend.py`               | `[x]`  | Abstract async backend interface                                                         |
+| `backend/packages/harness/deerflow/community/aio_sandbox/local_backend.py`         | `[x]`  | Local execution backend for the AIO sandbox                                              |
+| `backend/packages/harness/deerflow/community/aio_sandbox/remote_backend.py`        | `[x]`  | Remote/network execution backend                                                         |
+| `backend/packages/harness/deerflow/community/aio_sandbox/aio_sandbox.py`           | `[x]`  | Main async IO sandbox implementation                                                     |
+| `backend/packages/harness/deerflow/community/aio_sandbox/aio_sandbox_provider.py`  | `[x]`  | Provider/factory for the AIO sandbox                                                     |
+
+**Study order:**
+
+Phase 1 — Primitives (interface, exceptions, and security rules; read first so names are familiar):
+
+1. `sandbox/exceptions.py` — exception types; read first so error names are familiar when encountered downstream
+2. `sandbox/sandbox.py` — the interface contract; the vocabulary every sandbox implementation satisfies
+3. `sandbox/security.py` — path and command blocklist; read before any implementation to understand the safety envelope
+4. `sandbox/file_operation_lock.py` — per-sandbox file concurrency primitive
+
+Phase 2 — Local sandbox (the default filesystem-based implementation):
+
+5. `sandbox/local/list_dir.py` — directory listing helper; consumed by local_sandbox, read first
+6. `sandbox/local/local_sandbox.py` — concrete filesystem sandbox; implements the sandbox.py interface
+7. `sandbox/local/local_sandbox_provider.py` — factory for the local sandbox
+
+Phase 3 — Sandbox tools and search (the agent's surface API):
+
+8. `sandbox/search.py` — file search within the sandbox
+9. `sandbox/tools.py` — LangGraph tools: bash, ls, read_file, write_file, str_replace; the agent's primary interface to the sandbox
+
+Phase 4 — Provider and middleware (assembly layer):
+
+10. `sandbox/sandbox_provider.py` — selects local vs AIO sandbox based on config; ties all implementations together
+11. `sandbox/middleware.py` — already annotated in §09; re-read specifically the `before_agent` (acquire) and `after_agent` (release) lifecycle
+
+Phase 5 — Community AIO sandbox (the remote/async alternative):
+
+12. `community/aio_sandbox/sandbox_info.py` — data shapes describing sandbox metadata
+13. `community/aio_sandbox/backend.py` — abstract async backend interface
+14. `community/aio_sandbox/local_backend.py` — local execution backend
+15. `community/aio_sandbox/remote_backend.py` — remote/network execution backend
+16. `community/aio_sandbox/aio_sandbox.py` — main async IO sandbox; implements the sandbox.py interface
+17. `community/aio_sandbox/aio_sandbox_provider.py` — provider/factory for the AIO sandbox
 
 ---
 
@@ -1034,7 +1081,7 @@ Phase 1 — Bottom-up (primitives first, top-level coordinator last):
 | 12      | Backend: Tools System            | [x]    | `modules/12a-tools-primitives-registry.md` (phases 1–2), `modules/12b-tools-builtins.md` (phase 3: clarification, present_files, view_image, task), `modules/12c-tools-agent-builtins.md` (phase 3: tool_search, invoke_acp_agent, setup_agent, update_agent)                                                                                                             |
 | 13      | Backend: Skills System           | [~]    | `modules/13a-skills-primitives-storage.md` (phases 1–2: types, `__init__`, storage), `modules/13b-skills-processing-install.md` (phases 3–4: parser, validation, security_scanner, tool_policy, installer, skill_evolution_config)                                                                                                                                        |
 | 14      | Backend: MCP Integration         | [x]    | `modules/14-mcp-integration.md`                                                                                                                                                                                                                                                                                                                                           |
-| 15      | Backend: Sandbox                 | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
+| 15      | Backend: Sandbox                 | [x]    | `modules/15a-sandbox-primitives.md` (phase 1: exceptions, sandbox interface, security gate, file lock), `modules/15b-local-sandbox.md` (phase 2: list_dir, LocalSandbox, LocalSandboxProvider), `modules/15c-sandbox-search-tools.md` (phase 3: search.py, tools.py), `modules/15d-sandbox-provider-middleware.md` (phase 4: sandbox_provider.py, middleware.py), `modules/15e-aio-sandbox.md` (phase 5: AIO community sandbox — sandbox_info, backend, local_backend, remote_backend, aio_sandbox, aio_sandbox_provider) |
 | 16      | Backend: Model Layer             | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
 | 17      | Backend: Config System           | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
 | 18      | Backend: Persistence Layer       | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |

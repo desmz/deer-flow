@@ -77,6 +77,8 @@ class LocalSandbox(Sandbox):
         self.path_mappings = path_mappings or []
         # Track files written through write_file so read_file only
         # reverse-resolves paths in agent-authored content.
+        # [DL-INSIGHT] Selective reverse-resolution: only agent-written files get path scrubbing on read.
+        # User uploads and external tool output are returned verbatim (see PR #1935).
         self._agent_written_paths: set[str] = set()
 
     def _is_read_only_path(self, resolved_path: str) -> bool:
@@ -141,6 +143,7 @@ class LocalSandbox(Sandbox):
         resolved_path = (local_root / relative).resolve() if relative else local_root
 
         try:
+            # [DL-WARN] Both `..` traversal and symlink escape surface here as ValueError → PermissionError(EACCES).
             resolved_path.relative_to(local_root)
         except ValueError as exc:
             raise PermissionError(errno.EACCES, "Access denied: path escapes mounted directory", path_str) from exc
@@ -150,6 +153,8 @@ class LocalSandbox(Sandbox):
     def _resolve_path(self, path: str) -> str:
         return self._resolve_path_with_mapping(path).path
 
+    # [DL-INSIGHT] Dual read-only check: the matched container mapping's flag OR the physical path's most-specific prefix.
+    # This ensures a symlink that re-enters a read-only mount (via a writable sub-mount) is still blocked.
     def _is_resolved_path_read_only(self, resolved: ResolvedPath) -> bool:
         return bool(resolved.mapping and resolved.mapping.read_only) or self._is_read_only_path(resolved.path)
 
@@ -236,6 +241,7 @@ class LocalSandbox(Sandbox):
         # Create pattern that matches any of the container paths.
         # The lookahead (?=/|$|...) ensures we only match at a path-segment boundary,
         # preventing /mnt/skills from matching inside /mnt/skills-extra.
+        # [DL-NOTE] Boundary lookahead (?=/|$|...) prevents /mnt/skills matching inside /mnt/skills-extra.
         patterns = [re.escape(m.container_path) + r"(?=/|$|[\s\"';&|<>()])(?:/[^\s\"';&|<>()]*)?" for m in sorted_mappings]
         pattern = re.compile("|".join(f"({p})" for p in patterns))
 
@@ -349,6 +355,7 @@ class LocalSandbox(Sandbox):
 
         final_output = output if output else "(no output)"
         # Reverse resolve local paths back to container paths in output
+        # [DL-INSIGHT] All command output is scrubbed: agent never sees host filesystem paths, only container paths.
         return self._reverse_resolve_paths_in_output(final_output)
 
     def list_dir(self, path: str, max_depth=2) -> list[str]:
