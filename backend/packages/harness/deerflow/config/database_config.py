@@ -37,7 +37,12 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+# [DL-INSIGHT] One config object governs two distinct persistence layers: the LangGraph
+# checkpointer (graph state) and the app ORM (runs, threads, users). Unifying them
+# means operators set one backend, not two — less surface area for misconfiguration.
 class DatabaseConfig(BaseModel):
+    # [DL-NOTE] Default is "memory" — no persistence across restarts. Production
+    # requires an explicit backend choice; the system will not silently lose data.
     backend: Literal["memory", "sqlite", "postgres"] = Field(
         default="memory",
         description=("Storage backend for both checkpointer and application data. 'memory' for development (no persistence across restarts), 'sqlite' for single-node deployment, 'postgres' for production multi-node deployment."),
@@ -78,7 +83,8 @@ class DatabaseConfig(BaseModel):
         """Unified SQLite file path shared by checkpointer and app."""
         return os.path.join(self._resolved_sqlite_dir, "deerflow.db")
 
-    # Backward-compatible aliases
+    # [DL-NOTE] Both aliases point to the same file — kept for call-site clarity
+    # so readers of checkpointer code and ORM code each see a familiar name.
     @property
     def checkpointer_sqlite_path(self) -> str:
         """SQLite file path for the LangGraph checkpointer (alias for sqlite_path)."""
@@ -96,6 +102,8 @@ class DatabaseConfig(BaseModel):
             return f"sqlite+aiosqlite:///{self.sqlite_path}"
         if self.backend == "postgres":
             url = self.postgres_url
+            # [DL-NOTE] Auto-upgrade plain postgresql:// to postgresql+asyncpg://
+            # so config.yaml can use the standard URL form without driver awareness.
             if url.startswith("postgresql://"):
                 url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
             return url

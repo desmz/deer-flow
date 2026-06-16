@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field
 from deerflow.config.runtime_paths import project_root, resolve_path
 
 
+# [DL-NOTE] Walks 4 parents from this file to find the monorepo root.
+# __file__ = .../deerflow/config/skills_config.py, so parents[4] = harness package root, parent = repo root.
 def _legacy_skills_candidates() -> tuple[Path, ...]:
     """Return source-tree skills locations for monorepo compatibility."""
     backend_dir = Path(__file__).resolve().parents[4]
@@ -16,6 +18,8 @@ def _legacy_skills_candidates() -> tuple[Path, ...]:
 class SkillsConfig(BaseModel):
     """Configuration for skills system"""
 
+    # [DL-INSIGHT] `use` is a reflection class path — resolve_class(skills_config.use, SkillStorage)
+    # in skills/storage/__init__.py:40 instantiates the concrete storage backend.
     use: str = Field(
         default="deerflow.skills.storage.local_skill_storage:LocalSkillStorage",
         description="Class path of the SkillStorage implementation.",
@@ -24,6 +28,8 @@ class SkillsConfig(BaseModel):
         default=None,
         description=("Path to skills directory. If not specified, defaults to `skills` under the caller project root, falling back to the legacy repo-root location for monorepo compatibility."),
     )
+    # [DL-NOTE] container_path is the virtual mount point the sandbox sees — /mnt/skills.
+    # The skill SOUL.md references this path so the agent knows where to find installed skills.
     container_path: str = Field(
         default="/mnt/skills",
         description="Path where skills are mounted in the sandbox container",

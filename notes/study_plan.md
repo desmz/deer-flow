@@ -793,11 +793,83 @@ Phase 4 — Factory and config (assembly and wiring):
 
 **Key files:**
 
-| Path                                        | Status | Notes                                                                                                       |
-| ------------------------------------------- | ------ | ----------------------------------------------------------------------------------------------------------- |
-| `backend/packages/harness/deerflow/config/` | `[ ]`  | All config modules: agents, database, extensions, guardrails, memory, model, sandbox, skills, tracing, etc. |
-| `config.yaml`                               | `[ ]`  | Live config file — the user-facing face of the config system                                                |
-| `config.example.yaml`                       | `[ ]`  | Annotated example showing all available config options                                                      |
+| Path                                                                    | Status | Notes                                                                                                 |
+| ----------------------------------------------------------------------- | ------ | ----------------------------------------------------------------------------------------------------- |
+| `backend/packages/harness/deerflow/config/app_config.py`               | `[x]`  | Root config loader; YAML parsing, hot-reload, versioning — the top-level coordinator                 |
+| `backend/packages/harness/deerflow/config/paths.py`                    | `[x]`  | Top-level path constants for user data, thread dirs, and upload dirs                                 |
+| `backend/packages/harness/deerflow/config/runtime_paths.py`            | `[x]`  | Runtime-resolved path helpers; computed from `paths.py` at startup                                   |
+| `backend/packages/harness/deerflow/config/database_config.py`          | `[x]`  | SQLAlchemy connection config; database URL and pool settings                                         |
+| `backend/packages/harness/deerflow/config/checkpointer_config.py`      | `[x]`  | LangGraph checkpoint persistence config; backend selection and TTL                                   |
+| `backend/packages/harness/deerflow/config/run_events_config.py`        | `[x]`  | Run event store config; JSONL vs DB backend selection and rotation settings                          |
+| `backend/packages/harness/deerflow/config/model_config.py`             | `[x]`  | Model configuration shapes; provider selection, credentials, and thinking-mode settings              |
+| `backend/packages/harness/deerflow/config/tracing_config.py`           | `[x]`  | LangSmith and Langfuse tracing config; provider selection and API key settings                       |
+| `backend/packages/harness/deerflow/config/agents_config.py`            | `[x]`  | Per-agent definition config; model selection, skill allowlists, and agent metadata                   |
+| `backend/packages/harness/deerflow/config/agents_api_config.py`        | `[x]`  | External agent HTTP API config; host, port, and auth settings                                        |
+| `backend/packages/harness/deerflow/config/subagents_config.py`         | `[x]`  | Subagent execution config; concurrency limits and timeout settings                                   |
+| `backend/packages/harness/deerflow/config/acp_config.py`               | `[x]`  | Agent Collaboration Protocol config; peer agent discovery and connection                              |
+| `backend/packages/harness/deerflow/config/tool_config.py`              | `[x]`  | Tool output truncation and timeout settings                                                           |
+| `backend/packages/harness/deerflow/config/tool_search_config.py`       | `[x]`  | Semantic tool search config; embedding model and index settings                                       |
+| `backend/packages/harness/deerflow/config/skills_config.py`            | `[x]`  | Skills subsystem config; bundled skill directories and custom skill paths                             |
+| `backend/packages/harness/deerflow/config/skill_evolution_config.py`   | `[x]`  | Config for skill evolution; auto-upgrade and migration settings                                       |
+| `backend/packages/harness/deerflow/config/extensions_config.py`        | `[x]`  | Extensions registry config shapes; MCP servers, skills, and custom agents                            |
+| `backend/packages/harness/deerflow/config/sandbox_config.py`           | `[x]`  | Sandbox config; local vs AIO selection, Docker mode detection, and timeout                            |
+| `backend/packages/harness/deerflow/config/guardrails_config.py`        | `[x]`  | Guardrail content filtering config; rule sets and provider selection                                  |
+| `backend/packages/harness/deerflow/config/memory_config.py`            | `[x]`  | Memory subsystem config; extraction model, storage path, and debounce settings                       |
+| `backend/packages/harness/deerflow/config/stream_bridge_config.py`     | `[x]`  | Stream bridge config; buffer sizes, timeout, and SSE flush interval                                   |
+| `backend/packages/harness/deerflow/config/summarization_config.py`     | `[x]`  | Config for SummarizationMiddleware                                                                    |
+| `backend/packages/harness/deerflow/config/loop_detection_config.py`    | `[x]`  | Config for LoopDetectionMiddleware                                                                    |
+| `backend/packages/harness/deerflow/config/title_config.py`             | `[x]`  | Config for TitleMiddleware                                                                            |
+| `backend/packages/harness/deerflow/config/token_usage_config.py`       | `[x]`  | Config for TokenUsageMiddleware                                                                       |
+
+**Notes files:**
+
+- `notes/modules/17a-config-app-config.md` — Phase 1: root loader, hot-reload, ContextVar stack
+- `notes/modules/17b-config-paths-persistence-agents.md` — Phases 2–4: paths, persistence, tracing, agent ecosystem
+
+**Study order:**
+
+Phase 1 — Root loader (read first — the entry point that assembles all other configs):
+
+1. `config/app_config.py` — root YAML loader and hot-reload coordinator; read first to see how all other configs are composed from YAML
+
+Phase 2 — Path and persistence primitives (infrastructure foundation):
+
+2. `config/paths.py` — top-level path constants; read before `runtime_paths.py` since it depends on these
+3. `config/runtime_paths.py` — runtime-resolved paths computed from `paths.py`
+4. `config/database_config.py` — SQLAlchemy connection config; needed by the checkpointer and run events
+5. `config/checkpointer_config.py` — LangGraph checkpoint persistence backend and TTL
+6. `config/run_events_config.py` — run event store backend selection and rotation
+
+Phase 3 — Cross-cutting concerns (model and tracing):
+
+7. `config/model_config.py` [already annotated §16] — re-read specifically for how it integrates into `app_config.py`
+8. `config/tracing_config.py` — LangSmith and Langfuse tracing; provider selection and API key config
+
+Phase 4 — Agent ecosystem configs:
+
+9. `config/agents_config.py` — per-agent definitions and model selection
+10. `config/agents_api_config.py` — external agent HTTP API settings
+11. `config/subagents_config.py` — subagent concurrency limits and timeout
+12. `config/acp_config.py` — Agent Collaboration Protocol peer discovery and connection
+
+Phase 5 — Tool and skill configs:
+
+13. `config/tool_config.py` — tool output truncation and timeout
+14. `config/tool_search_config.py` — semantic tool search embedding model and index
+15. `config/skills_config.py` — skill directory paths for bundled and custom skills
+16. `config/skill_evolution_config.py` [already annotated §13] — re-read for integration with `app_config.py`
+17. `config/extensions_config.py` — extensions registry: MCP servers, skills, custom agents
+
+Phase 6 — Runtime feature configs (middleware and system features):
+
+18. `config/sandbox_config.py` — sandbox selection and Docker mode detection
+19. `config/guardrails_config.py` — content filtering rule sets and provider selection
+20. `config/memory_config.py` — memory extraction model and debounce settings
+21. `config/stream_bridge_config.py` — SSE buffer sizes and flush interval
+22. `config/summarization_config.py` [already annotated §09] — re-read for `app_config.py` integration
+23. `config/loop_detection_config.py` [already annotated §09] — re-read for `app_config.py` integration
+24. `config/title_config.py` [already annotated §09] — re-read for `app_config.py` integration
+25. `config/token_usage_config.py` [already annotated §09] — re-read for `app_config.py` integration
 
 ---
 
@@ -1116,7 +1188,7 @@ Phase 4 — Factory and config (assembly and wiring):
 | 14      | Backend: MCP Integration         | [x]    | `modules/14-mcp-integration.md`                                                                                                                                                                                                                                                                                                                                           |
 | 15      | Backend: Sandbox                 | [x]    | `modules/15a-sandbox-primitives.md` (phase 1: exceptions, sandbox interface, security gate, file lock), `modules/15b-local-sandbox.md` (phase 2: list_dir, LocalSandbox, LocalSandboxProvider), `modules/15c-sandbox-search-tools.md` (phase 3: search.py, tools.py), `modules/15d-sandbox-provider-middleware.md` (phase 4: sandbox_provider.py, middleware.py), `modules/15e-aio-sandbox.md` (phase 5: AIO community sandbox — sandbox_info, backend, local_backend, remote_backend, aio_sandbox, aio_sandbox_provider) |
 | 16      | Backend: Model Layer             | [x]    | `modules/16a-model-layer-credential-patches.md` (phases 1–2: `__init__`, credential_loader, patched_openai, patched_deepseek, patched_minimax), `modules/16b-model-layer-providers.md` (phase 3: claude_provider, vllm_provider, mindie_provider, openai_codex_provider), `modules/16c-model-layer-factory-config.md` (phase 4: config/model_config.py, models/factory.py) |
-| 17      | Backend: Config System           | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
+| 17      | Backend: Config System           | [~]    | `modules/17a-config-app-config.md` (phase 1), `modules/17b-config-paths-persistence-agents.md` (phases 2–4), `modules/17d-config-phases5-6.md` (phases 5–6)                                                                                                                          |
 | 18      | Backend: Persistence Layer       | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
 | 19      | Backend: Channels                | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
 | 20      | Backend: Tracing & Observability | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |

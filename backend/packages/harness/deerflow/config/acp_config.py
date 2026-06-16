@@ -8,14 +8,22 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 
 
+# [DL-INSIGHT] ACP agents are external subprocesses launched via the `invoke_acp_agent` tool.
+# Each entry in config.yaml's `acp_agents` map becomes one registered external agent.
+# Unlike DeerFlow subagents (same process), ACP agents are separate binaries communicating
+# over the Agent Collaboration Protocol (stdio/HTTP).
 class ACPAgentConfig(BaseModel):
     """Configuration for a single ACP-compatible agent."""
 
     command: str = Field(description="Command to launch the ACP agent subprocess")
     args: list[str] = Field(default_factory=list, description="Additional command arguments")
+    # [DL-NOTE] $VAR env values are resolved from the host environment at spawn time
+    # by invoke_acp_agent_tool.py — not here. ACPAgentConfig stores the raw strings.
     env: dict[str, str] = Field(default_factory=dict, description="Environment variables to inject into the agent subprocess. Values starting with $ are resolved from host environment variables.")
     description: str = Field(description="Description of the agent's capabilities (shown in tool description)")
     model: str | None = Field(default=None, description="Model hint passed to the agent (optional)")
+    # [DL-WARN] Default False means all permission requests from this ACP agent are denied.
+    # True approves with "allow_once" (not "allow_always") — least-privilege even when enabled.
     auto_approve_permissions: bool = Field(
         default=False,
         description=(
@@ -26,6 +34,8 @@ class ACPAgentConfig(BaseModel):
     )
 
 
+# [DL-NOTE] Starts as empty dict (not None). Unlike other singletons that start as a
+# default config object, ACP agents are absent until config.yaml declares them.
 _acp_agents: dict[str, ACPAgentConfig] = {}
 
 

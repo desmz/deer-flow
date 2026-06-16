@@ -4,6 +4,9 @@ import os
 from pathlib import Path
 
 
+# [DL-INSIGHT] This module is the lowest layer of the path stack: pure CWD/env-var
+# resolution with no knowledge of per-user or per-thread structure. paths.py builds on
+# top of it. Kept separate so the harness can be used outside a DeerFlow project root.
 def project_root() -> Path:
     """Return the caller project root for runtime-owned files."""
     if env_root := os.getenv("DEER_FLOW_PROJECT_ROOT"):
@@ -13,6 +16,8 @@ def project_root() -> Path:
         if not root.is_dir():
             raise ValueError(f"DEER_FLOW_PROJECT_ROOT is set to '{env_root}', but the resolved path '{root}' is not a directory.")
         return root
+    # [DL-NOTE] CWD fallback means the harness must be launched from the project root;
+    # `make dev` and the Docker entrypoint both enforce this convention.
     return Path.cwd().resolve()
 
 
@@ -20,6 +25,8 @@ def runtime_home() -> Path:
     """Return the writable DeerFlow state directory."""
     if env_home := os.getenv("DEER_FLOW_HOME"):
         return Path(env_home).resolve()
+    # [DL-NOTE] .deer-flow/ inside the project root is where all state lives by default
+    # (memory, threads, agents). This is the fallback used in local dev.
     return project_root() / ".deer-flow"
 
 

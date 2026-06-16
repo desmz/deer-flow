@@ -31,11 +31,14 @@ from deerflow.config.token_usage_config import TokenUsageConfig
 from deerflow.config.tool_config import ToolConfig, ToolGroupConfig
 from deerflow.config.tool_search_config import ToolSearchConfig, load_tool_search_config_from_dict
 
+# [DL-NOTE] load_dotenv() runs at import time — .env is resolved before any AppConfig is constructed.
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
 
+# [DL-NOTE] These defaults are injected by _apply_database_defaults() before model_validate —
+# not in DatabaseConfig.model_fields — so they only take effect when loading from file.
 CONFIG_FILE_DATABASE_DEFAULTS = {
     "backend": "sqlite",
     "sqlite_dir": ".deer-flow/data",
@@ -49,6 +52,8 @@ class CircuitBreakerConfig(BaseModel):
     recovery_timeout_sec: int = Field(default=60, description="Time in seconds before attempting to recover the circuit")
 
 
+# [DL-NOTE] parents[4] climbs: config/ → deerflow/ → harness/ → packages/ → backend/
+# This hard-codes the harness package depth (4 levels) — fragile if the package is relocated.
 def _legacy_config_candidates() -> tuple[Path, ...]:
     """Return source-tree config.yaml locations for monorepo compatibility."""
     backend_dir = Path(__file__).resolve().parents[4]
@@ -75,6 +80,8 @@ def apply_logging_level(name: str | None) -> None:
     level = logging_level_from_config(name)
     for logger_name in ("deerflow", "app"):
         logging.getLogger(logger_name).setLevel(level)
+    # [DL-INSIGHT] Lowers root handler thresholds so deerflow/app messages can propagate,
+    # but never raises them — preserves intentional quieting of third-party library logs.
     for handler in logging.root.handlers:
         if level < handler.level:
             handler.setLevel(level)
@@ -86,6 +93,7 @@ class AppConfig(BaseModel):
     log_level: str = Field(default="info", description="Logging level for deerflow and app modules (debug/info/warning/error); third-party libraries are not affected")
     token_usage: TokenUsageConfig = Field(default_factory=TokenUsageConfig, description="Token usage tracking configuration")
     models: list[ModelConfig] = Field(default_factory=list, description="Available models")
+    # [DL-NOTE] sandbox is the only required field (no default_factory) — config.yaml must include it.
     sandbox: SandboxConfig = Field(description="Sandbox configuration")
     tools: list[ToolConfig] = Field(default_factory=list, description="Available tools")
     tool_groups: list[ToolGroupConfig] = Field(default_factory=list, description="Available tool groups")
@@ -102,6 +110,7 @@ class AppConfig(BaseModel):
     guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig, description="Guardrail middleware configuration")
     circuit_breaker: CircuitBreakerConfig = Field(default_factory=CircuitBreakerConfig, description="LLM circuit breaker configuration")
     loop_detection: LoopDetectionConfig = Field(default_factory=LoopDetectionConfig, description="Loop detection middleware configuration")
+    # [DL-INSIGHT] extra="allow" means unknown YAML keys don't raise errors — forward-compat for new config keys.
     model_config = ConfigDict(extra="allow")
     database: DatabaseConfig = Field(default_factory=DatabaseConfig, description="Unified database backend configuration")
     run_events: RunEventsConfig = Field(default_factory=RunEventsConfig, description="Run event storage configuration")
@@ -161,14 +170,19 @@ class AppConfig(BaseModel):
         cls._apply_database_defaults(config_data)
 
         # Load circuit_breaker config if present
+        # [DL-WARN] This assignment is a no-op — a leftover placeholder; circuit_breaker
+        # reaches model_validate already in config_data with no transformation needed.
         if "circuit_breaker" in config_data:
             config_data["circuit_breaker"] = config_data["circuit_breaker"]
 
-        # Load extensions config separately (it's in a different file)
+        # [DL-INSIGHT] ExtensionsConfig (MCP servers/skills) lives in a separate file (extensions_config.json)
+        # and is merged into config_data here before model_validate so AppConfig sees one unified dict.
         extensions_config = ExtensionsConfig.from_file()
         config_data["extensions"] = extensions_config.model_dump()
 
         result = cls.model_validate(config_data)
+        # [DL-NOTE] ACP agents are validated separately because their schema is dict[str, ACPAgentConfig]
+        # with dynamic keys — they don't fit the standard Pydantic model_validate flow cleanly.
         acp_agents = cls._validate_acp_agents(config_data.get("acp_agents", {}))
         cls._apply_singleton_configs(result, acp_agents)
         return result
@@ -182,10 +196,15 @@ class AppConfig(BaseModel):
             config_data = {}
         return {name: ACPAgentConfig(**cfg) for name, cfg in config_data.items()}
 
+    # [DL-INSIGHT] Fan-out method: after loading AppConfig, propagates each sub-config into its
+    # module-level singleton (get_title_config(), get_summarization_config(), etc.).
+    # This is the bridge between the Pydantic value object and the global accessor pattern.
     @classmethod
     def _apply_singleton_configs(cls, config: Self, acp_agents: dict[str, ACPAgentConfig]) -> None:
         from deerflow.config.checkpointer_config import get_checkpointer_config
 
+        # [DL-NOTE] Captures the pre-reload checkpointer config to detect changes that require
+        # resetting runtime singletons (checkpointer + store share the same SQLite backend).
         previous_checkpointer_config = get_checkpointer_config()
 
         load_title_config_from_dict(config.title.model_dump())
@@ -199,6 +218,8 @@ class AppConfig(BaseModel):
         load_stream_bridge_config_from_dict(config.stream_bridge.model_dump() if config.stream_bridge is not None else None)
         load_acp_config_from_dict({name: agent.model_dump() for name, agent in acp_agents.items()})
 
+        # [DL-INSIGHT] Lazy imports here break the import cycle: runtime.checkpointer and
+        # runtime.store both import get_app_config(), so they can't be top-level imports here.
         if previous_checkpointer_config != config.checkpointer:
             # These runtime singletons derive their backend from checkpointer config.
             # Keep imports local to avoid cycles: both providers import get_app_config.
@@ -220,6 +241,8 @@ class AppConfig(BaseModel):
         for key, value in CONFIG_FILE_DATABASE_DEFAULTS.items():
             database_config.setdefault(key, value)
 
+    # [DL-NOTE] Version check is warning-only, never an error — old configs still load,
+    # users are nudged to run `make config-upgrade` rather than being blocked.
     @classmethod
     def _check_config_version(cls, config_data: dict, config_path: Path) -> None:
         """Check if the user's config.yaml is outdated compared to config.example.yaml.
@@ -240,6 +263,7 @@ class AppConfig(BaseModel):
             if candidate.exists():
                 example_path = candidate
                 break
+            # [DL-NOTE] this happened when it reached the absolute root directory of your computer's file system
             parent = search_dir.parent
             if parent == search_dir:
                 break
@@ -280,6 +304,8 @@ class AppConfig(BaseModel):
         if isinstance(config, str):
             if config.startswith("$"):
                 env_value = os.getenv(config[1:])
+                # [DL-WARN] Missing env vars raise at load time (strict), not silently fallback to None.
+                # A typo in config.yaml blocks startup entirely.
                 if env_value is None:
                     raise ValueError(f"Environment variable {config[1:]} not found for config value {config}")
                 return env_value
@@ -330,7 +356,11 @@ class AppConfig(BaseModel):
 _app_config: AppConfig | None = None
 _app_config_path: Path | None = None
 _app_config_mtime: float | None = None
+# [DL-NOTE] _app_config_is_custom = True when set_app_config() was called (e.g. in tests);
+# custom configs bypass mtime hot-reload so injected test configs are never clobbered.
 _app_config_is_custom = False
+# [DL-INSIGHT] Two ContextVars implement a stack of per-async-task config overrides.
+# push/pop allows nested overrides (e.g. test isolation, per-request config) without thread-locals.
 _current_app_config: ContextVar[AppConfig | None] = ContextVar("deerflow_current_app_config", default=None)
 _current_app_config_stack: ContextVar[tuple[AppConfig | None, ...]] = ContextVar("deerflow_current_app_config_stack", default=())
 
@@ -365,6 +395,8 @@ def get_app_config() -> AppConfig:
     """
     global _app_config, _app_config_path, _app_config_mtime
 
+    # [DL-INSIGHT] Priority order: ContextVar override > custom (set_app_config) > file with mtime hot-reload.
+    # The ContextVar check is first so per-request test overrides always win.
     runtime_override = _current_app_config.get()
     if runtime_override is not None:
         return runtime_override
@@ -375,6 +407,8 @@ def get_app_config() -> AppConfig:
     resolved_path = AppConfig.resolve_config_path()
     current_mtime = _get_config_mtime(resolved_path)
 
+    # [DL-WARN] mtime is checked on every get_app_config() call (a stat() syscall per request).
+    # No mutex guards the reload — concurrent requests could both see a changed mtime and both reload.
     should_reload = _app_config is None or _app_config_path != resolved_path or _app_config_mtime != current_mtime
     if should_reload:
         if _app_config_path == resolved_path and _app_config_mtime is not None and current_mtime is not None and _app_config_mtime != current_mtime:
@@ -437,6 +471,8 @@ def peek_current_app_config() -> AppConfig | None:
     return _current_app_config.get()
 
 
+# [DL-INSIGHT] push/pop form a proper LIFO stack using ContextVar tuples — each async task
+# gets its own stack copy so nested overrides in one task don't bleed into siblings.
 def push_current_app_config(config: AppConfig) -> None:
     """Push a runtime-scoped AppConfig override for the current execution context."""
     stack = _current_app_config_stack.get()

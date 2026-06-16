@@ -44,6 +44,9 @@ class CustomSubagentConfig(BaseModel):
         default=None,
         description="Tool names whitelist (None = inherit all tools from parent)",
     )
+    # [DL-WARN] Default disallowed_tools blocks "task" (prevents recursive subagent nesting),
+    # "ask_clarification" (UI-only, subagent has no user to ask), and "present_files"
+    # (output display; meaningless inside a subagent's execution context).
     disallowed_tools: list[str] | None = Field(
         default_factory=lambda: ["task", "ask_clarification", "present_files"],
         description="Tool names to deny",
@@ -52,6 +55,8 @@ class CustomSubagentConfig(BaseModel):
         default=None,
         description="Skill names whitelist (None = inherit all enabled skills, [] = no skills)",
     )
+    # [DL-NOTE] "inherit" is a sentinel string (not None) so the field stays non-optional
+    # while still signalling "use parent model". The registry checks `model == "inherit"`.
     model: str = Field(
         default="inherit",
         description="Model to use - 'inherit' uses parent's model",
@@ -68,9 +73,14 @@ class CustomSubagentConfig(BaseModel):
     )
 
 
+# [DL-INSIGHT] Two extension points, two different concepts:
+# - `agents`: overrides for *existing* builtins (general-purpose, bash) — tune their defaults
+# - `custom_agents`: defines *new* subagent types declared entirely in config.yaml
 class SubagentsAppConfig(BaseModel):
     """Configuration for the subagent system."""
 
+    # [DL-NOTE] Global timeout/max_turns apply to builtins only. Custom agents define
+    # their own timeout_seconds and max_turns directly in CustomSubagentConfig.
     timeout_seconds: int = Field(
         default=900,
         ge=1,
@@ -120,6 +130,8 @@ class SubagentsAppConfig(BaseModel):
 
     def get_max_turns_for(self, agent_name: str, builtin_default: int) -> int:
         """Get the effective max_turns for a specific agent."""
+        # [DL-NOTE] Three-level priority: per-agent override → global max_turns → builtin default.
+        # `builtin_default` is passed in by the registry so this method stays pure.
         override = self.agents.get(agent_name)
         if override is not None and override.max_turns is not None:
             return override.max_turns
@@ -155,6 +167,8 @@ def load_subagents_config_from_dict(config_dict: dict) -> None:
     global _subagents_config
     _subagents_config = SubagentsAppConfig(**config_dict)
 
+    # [DL-NOTE] Diagnostic log on every reload — surfaces which agents have overrides
+    # and which custom agents are registered, without requiring a debug breakpoint.
     overrides_summary = {}
     for name, override in _subagents_config.agents.items():
         parts = []

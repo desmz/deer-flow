@@ -9,6 +9,10 @@ class VolumeMountConfig(BaseModel):
     read_only: bool = Field(default=False, description="Whether the mount is read-only")
 
 
+# [DL-INSIGHT] SandboxConfig is a single flat schema covering TWO very different providers:
+# LocalSandboxProvider (filesystem) and AioSandboxProvider (Docker). Fields like `image`,
+# `port`, and `replicas` are silently ignored by LocalSandbox — extra="allow" absorbs anything
+# else (e.g. `provisioner_url` for K8s mode) without a schema change.
 class SandboxConfig(BaseModel):
     """Config section for a sandbox.
 
@@ -27,10 +31,14 @@ class SandboxConfig(BaseModel):
         environment: Environment variables to inject into the container (values starting with $ are resolved from host env)
     """
 
+    # [DL-NOTE] `use` is a reflection class path — resolve_class(config.sandbox.use, SandboxProvider)
+    # selects the concrete provider. Swap the path to switch sandbox implementations with zero code change.
     use: str = Field(
         ...,
         description="Class path of the sandbox provider (e.g. deerflow.sandbox.local:LocalSandboxProvider)",
     )
+    # [DL-WARN] allow_host_bash=True gives the agent unrestricted shell access to the host machine.
+    # sandbox/security.py checks this flag before allowing bash execution on LocalSandboxProvider.
     allow_host_bash: bool = Field(
         default=False,
         description="Allow the bash tool to execute directly on the host when using LocalSandboxProvider. Dangerous; intended only for fully trusted local environments.",
@@ -64,6 +72,9 @@ class SandboxConfig(BaseModel):
         description="Environment variables to inject into the sandbox container. Values starting with $ will be resolved from host environment variables.",
     )
 
+    # [DL-INSIGHT] These three fields are context-window budget controls — they cap how much
+    # tool output is injected into the LLM context per call. sandbox/tools.py reads them at
+    # call time (e.g. tools.py:1264) to middle-truncate (bash) or head-truncate (read_file, ls).
     bash_output_max_chars: int = Field(
         default=20000,
         ge=0,

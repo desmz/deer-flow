@@ -20,6 +20,8 @@ from deerflow.runtime.user_context import get_effective_user_id
 
 logger = logging.getLogger(__name__)
 
+# [DL-NOTE] SOUL_FILENAME and AGENT_NAME_PATTERN are exported constants — imported by
+# memory/storage.py (cache key) and client.py (validation) as the single source of truth.
 SOUL_FILENAME = "SOUL.md"
 AGENT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9-]+$")
 
@@ -35,6 +37,9 @@ def validate_agent_name(name: str | None) -> str | None:
     return name
 
 
+# [DL-INSIGHT] AgentConfig is a thin data shape — it does NOT come from config.yaml via
+# AppConfig. It is loaded on-demand from a per-agent config.yaml file on disk at
+# {base_dir}/users/{user_id}/agents/{name}/config.yaml. Each custom agent is a directory.
 class AgentConfig(BaseModel):
     """Configuration for a custom agent."""
 
@@ -49,6 +54,9 @@ class AgentConfig(BaseModel):
     skills: list[str] | None = None
 
 
+# [DL-INSIGHT] resolve_agent_dir implements the same per-user → legacy fallback pattern as
+# paths.py: prefer the new per-user layout, fall back to legacy shared layout, return
+# the new-layout path for writes even when neither exists (so new agents go to new layout).
 def resolve_agent_dir(name: str, *, user_id: str | None = None) -> Path:
     """Return the on-disk directory for an agent, preferring the per-user layout.
 
@@ -119,13 +127,16 @@ def load_agent_config(name: str | None, *, user_id: str | None = None) -> AgentC
     if "name" not in data:
         data["name"] = name
 
-    # Strip unknown fields before passing to Pydantic (e.g. legacy prompt_file)
+    # [DL-NOTE] Unknown fields are stripped before Pydantic validation — forward compatibility:
+    # a new field added to config.yaml on an older install won't crash the load.
     known_fields = set(AgentConfig.model_fields.keys())
     data = {k: v for k, v in data.items() if k in known_fields}
 
     return AgentConfig(**data)
 
 
+# [DL-NOTE] When agent_name is None, SOUL.md is read from base_dir (the global user
+# profile). When agent_name is set, it comes from that agent's own directory.
 def load_agent_soul(agent_name: str | None, *, user_id: str | None = None) -> str | None:
     """Read the SOUL.md file for a custom agent, if it exists.
 
@@ -174,6 +185,8 @@ def list_custom_agents(*, user_id: str | None = None) -> list[AgentConfig]:
     user_root = paths.user_agents_dir(effective_user)
     legacy_root = paths.agents_dir
 
+    # [DL-INSIGHT] Iterating user_root first ensures per-user entries shadow legacy entries
+    # with the same name — `seen` blocks the legacy entry from being re-added.
     for root in (user_root, legacy_root):
         if not root.exists():
             continue

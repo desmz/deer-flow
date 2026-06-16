@@ -10,6 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from deerflow.config.runtime_paths import existing_project_file
 
 
+# [DL-INSIGHT] ExtensionsConfig is a separate file (extensions_config.json) from app_config (config.yaml).
+# Separating them lets the MCP/skills registry be updated at runtime via the Gateway API
+# without requiring a full AppConfig reload.
 class McpOAuthConfig(BaseModel):
     """OAuth configuration for an MCP server (HTTP/SSE transports)."""
 
@@ -57,6 +60,8 @@ class SkillStateConfig(BaseModel):
 class ExtensionsConfig(BaseModel):
     """Unified configuration for MCP servers and skills."""
 
+    # [DL-NOTE] camelCase alias "mcpServers" matches the JSON file key; populate_by_name=True
+    # allows both "mcp_servers" (Python) and "mcpServers" (JSON) to deserialize correctly.
     mcp_servers: dict[str, McpServerConfig] = Field(
         default_factory=dict,
         description="Map of MCP server name to configuration",
@@ -199,11 +204,16 @@ class ExtensionsConfig(BaseModel):
         """
         skill_config = self.skills.get(skill_name)
         if skill_config is None:
-            # Default to enable for public & custom skill
+            # [DL-NOTE] Absent = enabled by default for public/custom. Any other category
+            # (e.g. a future "experimental") must be explicitly enabled in the JSON.
             return skill_category in ("public", "custom")
         return skill_config.enabled
 
 
+# [DL-WARN] Unlike AppConfig, this singleton has NO mtime-based hot reload. It is refreshed
+# only when reload_extensions_config() is called explicitly (e.g. after a Gateway API write).
+# tools/tools.py bypasses this singleton and calls ExtensionsConfig.from_file() directly
+# to pick up file changes for MCP tool assembly.
 _extensions_config: ExtensionsConfig | None = None
 
 

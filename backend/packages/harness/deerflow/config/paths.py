@@ -5,9 +5,12 @@ from pathlib import Path, PureWindowsPath
 
 from deerflow.config.runtime_paths import runtime_home
 
-# Virtual path prefix seen by agents inside the sandbox
+# [DL-INSIGHT] This constant is the shared contract between the agent's sandbox view
+# and the host filesystem; every tool that constructs or resolves virtual paths uses this.
 VIRTUAL_PATH_PREFIX = "/mnt/user-data"
 
+# [DL-NOTE] Allowlist regexes prevent path traversal ("..", "/") in thread/user IDs
+# used as filesystem path segments — the primary injection barrier for the file layout.
 _SAFE_THREAD_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 _SAFE_USER_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 
@@ -39,6 +42,8 @@ def _join_host_path(base: str, *parts: str) -> str:
     ``Path(base) / ...`` on a POSIX host can accidentally rewrite those paths
     with mixed separators, so this helper preserves the original style.
     """
+    # [DL-NOTE] DooD (Docker-out-of-Docker) on Windows: bind mount sources must
+    # stay as Windows paths; detect by drive letter, UNC prefix, or backslash.
     if not parts:
         return base
 
@@ -99,6 +104,9 @@ class Paths:
 
         Falls back to base_dir when the env var is not set (native/local execution).
         """
+        # [DL-INSIGHT] DooD (Docker-out-of-Docker) requires a separate env var because
+        # the container sees /app/... but the host Docker daemon sees C:\repo\... —
+        # two different paths for the same bits on disk.
         if env := os.getenv("DEER_FLOW_HOST_BASE_DIR"):
             return Path(env)
         return self.base_dir
@@ -130,6 +138,9 @@ class Paths:
         """Path to the global user profile file: `{base_dir}/USER.md`."""
         return self.base_dir / "USER.md"
 
+    # [DL-INSIGHT] agents_dir / agent_dir / agent_memory_file are the "legacy" surface
+    # (pre-user-isolation). New code uses user_agents_dir / user_agent_dir.
+    # Both exist so the migration script can copy old → new without losing data.
     @property
     def agents_dir(self) -> Path:
         """Legacy root for shared (pre user-isolation) custom agents: `{base_dir}/agents/`.
@@ -168,6 +179,9 @@ class Paths:
         """Per-user per-agent memory: `{base_dir}/users/{user_id}/agents/{name}/memory.json`."""
         return self.user_agent_dir(user_id, agent_name) / "memory.json"
 
+    # [DL-INSIGHT] thread_dir is the branching point: user_id present → new per-user
+    # layout; user_id absent → legacy flat layout. Optional param enables backward
+    # compatibility without code duplication across all downstream methods.
     def thread_dir(self, thread_id: str, *, user_id: str | None = None) -> Path:
         """
         Host path for a thread's data.
@@ -277,6 +291,8 @@ class Paths:
             self.acp_workspace_dir(thread_id, user_id=user_id),
         ]:
             d.mkdir(parents=True, exist_ok=True)
+            # [DL-WARN] chmod(0o777) is intentional: sandbox containers run as a different
+            # UID than the host backend process; mode=... on mkdir() is masked by umask.
             d.chmod(0o777)
 
     def delete_thread_dir(self, thread_id: str, *, user_id: str | None = None) -> None:
@@ -318,6 +334,8 @@ class Paths:
         actual = (base / relative).resolve()
 
         try:
+            # [DL-NOTE] relative_to() raises ValueError if `actual` escapes `base`
+            # after symlink resolution — defense-in-depth against path traversal.
             actual.relative_to(base)
         except ValueError:
             raise ValueError("Access denied: path traversal detected")
@@ -330,6 +348,8 @@ class Paths:
 _paths: Paths | None = None
 
 
+# [DL-NOTE] Module-level singleton so all callers share the same resolved base_dir
+# without repeatedly walking the env-var priority chain on every call.
 def get_paths() -> Paths:
     """Return the global Paths singleton (lazy-initialized)."""
     global _paths

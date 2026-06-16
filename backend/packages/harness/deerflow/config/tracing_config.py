@@ -3,6 +3,9 @@ import threading
 
 from pydantic import BaseModel, Field
 
+# [DL-INSIGHT] Tracing is the only config subsystem that reads exclusively from env vars —
+# NOT from config.yaml. No AppConfig field, no hot-reload. Changing tracing requires a
+# process restart. This follows LangChain/LangSmith's own env-var conventions.
 _config_lock = threading.Lock()
 
 
@@ -16,9 +19,13 @@ class LangSmithTracingConfig(BaseModel):
 
     @property
     def is_configured(self) -> bool:
+        # [DL-NOTE] is_configured = enabled AND keys present. This is the gate for actually
+        # creating a tracer. enabled=True but no key → not configured (silent, no tracer).
         return self.enabled and bool(self.api_key)
 
     def validate(self) -> None:
+        # [DL-NOTE] validate() raises on enabled-but-missing-key — called explicitly at
+        # startup by validate_enabled_tracing_providers(), not automatically by Pydantic.
         if self.enabled and not self.api_key:
             raise ValueError("LangSmith tracing is enabled but LANGSMITH_API_KEY (or LANGCHAIN_API_KEY) is not set.")
 
@@ -59,6 +66,8 @@ class TracingConfig(BaseModel):
 
     @property
     def explicitly_enabled_providers(self) -> list[str]:
+        # [DL-NOTE] explicitly_enabled = enabled flag is True, regardless of whether keys
+        # are present. Used by validate_enabled() to decide which providers to validate.
         enabled: list[str] = []
         if self.langsmith.enabled:
             enabled.append("langsmith")
@@ -68,6 +77,8 @@ class TracingConfig(BaseModel):
 
     @property
     def enabled_providers(self) -> list[str]:
+        # [DL-NOTE] enabled_providers = enabled AND keys present (is_configured).
+        # Only these providers get actual tracer callbacks wired in factory.py.
         enabled: list[str] = []
         if self.langsmith.is_configured:
             enabled.append("langsmith")
@@ -109,11 +120,16 @@ def get_tracing_config() -> TracingConfig:
     global _tracing_config
     if _tracing_config is not None:
         return _tracing_config
+    # [DL-INSIGHT] Classic double-checked locking: outer check avoids lock contention on
+    # the hot path; inner check prevents a second thread from re-initializing after the
+    # first thread built the singleton while this thread was waiting for the lock.
     with _config_lock:
         if _tracing_config is not None:
             return _tracing_config
         _tracing_config = TracingConfig(
             langsmith=LangSmithTracingConfig(
+                # [DL-NOTE] LangSmith accepts legacy LANGCHAIN_* env var aliases so configs
+                # written for older LangChain versions still work without changes.
                 enabled=_env_flag_preferred("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2", "LANGCHAIN_TRACING"),
                 api_key=_first_env_value("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY"),
                 project=_first_env_value("LANGSMITH_PROJECT", "LANGCHAIN_PROJECT") or "deer-flow",

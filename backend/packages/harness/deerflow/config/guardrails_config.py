@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field
 class GuardrailProviderConfig(BaseModel):
     """Configuration for a guardrail provider."""
 
+    # [DL-NOTE] `use` is resolved via resolve_class() in tool_error_handling_middleware.py.
+    # `config` is passed as **kwargs to the provider's __init__ — open-ended provider settings.
     use: str = Field(description="Class path (e.g. 'deerflow.guardrails.builtin:AllowlistProvider')")
     config: dict = Field(default_factory=dict, description="Provider-specific settings passed as kwargs")
 
@@ -19,11 +21,17 @@ class GuardrailsConfig(BaseModel):
     """
 
     enabled: bool = Field(default=False, description="Enable guardrail middleware")
+    # [DL-INSIGHT] fail_closed=True is a security-first default: if the provider errors,
+    # the tool call is blocked rather than allowed through. See guardrails/middleware.py:74.
     fail_closed: bool = Field(default=True, description="Block tool calls if provider errors")
+    # [DL-NOTE] passport is forwarded as agent_id to the provider for per-agent policy lookups
+    # (e.g. OAP policy server uses it to locate ~/.aport/deerflow/ config).
     passport: str | None = Field(default=None, description="OAP passport path or hosted agent ID")
     provider: GuardrailProviderConfig | None = Field(default=None, description="Guardrail provider configuration")
 
 
+# [DL-NOTE] Same singleton pattern as tool_search_config and guardrails_config.
+# AppConfig wires this via load_guardrails_config_from_dict() at startup (app_config.py:216).
 _guardrails_config: GuardrailsConfig | None = None
 
 

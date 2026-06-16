@@ -10,6 +10,9 @@ StreamBridgeType = Literal["memory", "redis"]
 class StreamBridgeConfig(BaseModel):
     """Configuration for the stream bridge that connects agent workers to SSE endpoints."""
 
+    # [DL-WARN] Only "memory" is implemented. "redis" is declared in the Literal type
+    # but has no implementation — selecting it will silently fall back to memory in
+    # async_provider.py because the type check there only branches on "memory".
     type: StreamBridgeType = Field(
         default="memory",
         description="Stream bridge backend type. 'memory' uses in-process asyncio.Queue (single-process only). 'redis' uses Redis Streams (planned for Phase 2, not yet implemented).",
@@ -18,14 +21,17 @@ class StreamBridgeConfig(BaseModel):
         default=None,
         description="Redis URL for the redis stream bridge type. Example: 'redis://localhost:6379/0'.",
     )
+    # [DL-NOTE] This is the SSE event buffer per run. 256 events covers most conversations;
+    # a slow SSE consumer that falls behind will start blocking the agent worker at this limit.
     queue_maxsize: int = Field(
         default=256,
         description="Maximum number of events buffered per run in the memory bridge.",
     )
 
 
-# Global configuration instance — None means no stream bridge is configured
-# (falls back to memory with defaults).
+# [DL-INSIGHT] Singleton starts as None (unlike MemoryConfig's eager default). AppConfig field
+# is also Optional — the entire `stream_bridge:` section can be absent from config.yaml.
+# async_provider.py falls back to queue_maxsize=256 when get_stream_bridge_config() returns None.
 _stream_bridge_config: StreamBridgeConfig | None = None
 
 
