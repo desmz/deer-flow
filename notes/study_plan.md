@@ -888,12 +888,45 @@ Phase 6 — Runtime feature configs (middleware and system features):
 
 **Key files:**
 
-| Path                                             | Status | Notes                                                                             |
-| ------------------------------------------------ | ------ | --------------------------------------------------------------------------------- |
-| `backend/packages/harness/deerflow/persistence/` | `[ ]`  | SQLAlchemy engine, base models, ORM models, repositories, migrations, JSON compat |
-| `backend/tests/test_persistence_*.py`            | `[ ]`  | Persistence layer tests (glob pattern)                                            |
-| `backend/tests/test_run_repository.py`           | `[ ]`  | Run repository tests                                                              |
-| `backend/tests/test_thread_meta_repo.py`         | `[ ]`  | Thread metadata repository tests                                                  |
+| Path                                                                   | Status | Notes                                                                |
+| ---------------------------------------------------------------------- | ------ | -------------------------------------------------------------------- |
+| `backend/packages/harness/deerflow/persistence/engine.py`              | `[ ]`  | SQLAlchemy engine setup; connection pooling and session factory      |
+| `backend/packages/harness/deerflow/persistence/base.py`                | `[ ]`  | Declarative base class; root all ORM models inherit from             |
+| `backend/packages/harness/deerflow/persistence/json_compat.py`         | `[ ]`  | JSON type compatibility layer; handles SQLite/PostgreSQL differences |
+| `backend/packages/harness/deerflow/persistence/models/run_event.py`    | `[ ]`  | ORM model for run events; maps to the event store DB table           |
+| `backend/packages/harness/deerflow/persistence/run/model.py`           | `[ ]`  | ORM model for run records                                            |
+| `backend/packages/harness/deerflow/persistence/run/sql.py`             | `[ ]`  | SQL repository for run records; CRUD over the runs table             |
+| `backend/packages/harness/deerflow/persistence/thread_meta/base.py`    | `[ ]`  | Abstract interface for the thread metadata repository                |
+| `backend/packages/harness/deerflow/persistence/thread_meta/memory.py`  | `[ ]`  | In-memory thread metadata store                                      |
+| `backend/packages/harness/deerflow/persistence/thread_meta/model.py`   | `[ ]`  | ORM model for thread metadata                                        |
+| `backend/packages/harness/deerflow/persistence/thread_meta/sql.py`     | `[ ]`  | SQL repository for thread metadata; CRUD over the thread_meta table  |
+| `backend/packages/harness/deerflow/persistence/feedback/model.py`      | `[ ]`  | ORM model for user feedback entries                                  |
+| `backend/packages/harness/deerflow/persistence/feedback/sql.py`        | `[ ]`  | SQL repository for feedback; CRUD over the feedback table            |
+| `backend/packages/harness/deerflow/persistence/user/model.py`          | `[ ]`  | ORM model for user records                                           |
+
+**Study order:**
+
+Phase 1 — Foundation (engine, base class, and JSON compat; read first so infrastructure is clear before any model):
+
+1. `persistence/engine.py` — SQLAlchemy engine and session factory; read first to understand the DB connection setup all repositories share
+2. `persistence/base.py` — declarative base; every ORM model inherits from this; read before any model file
+3. `persistence/json_compat.py` — JSON type compatibility layer; read before any model that uses JSON columns to understand the SQLite/PostgreSQL abstraction
+
+Phase 2 — ORM models (data shapes; read before repositories so field names are familiar):
+
+4. `persistence/models/run_event.py` — ORM model for run events; the only file in the `models/` subpackage
+5. `persistence/run/model.py` — ORM model for run records
+6. `persistence/thread_meta/model.py` — ORM model for thread metadata
+7. `persistence/feedback/model.py` — ORM model for user feedback entries
+8. `persistence/user/model.py` — ORM model for user records
+
+Phase 3 — Repositories (data access layer; read after models so the shapes each repository operates on are already familiar):
+
+9. `persistence/thread_meta/base.py` — abstract thread metadata interface; defines the CRUD contract before reading any implementation
+10. `persistence/thread_meta/memory.py` — in-memory implementation of that interface; simpler than SQL, read first
+11. `persistence/thread_meta/sql.py` — SQL implementation of the thread metadata repository
+12. `persistence/run/sql.py` — SQL repository for run records
+13. `persistence/feedback/sql.py` — SQL repository for feedback entries
 
 ---
 
@@ -942,10 +975,27 @@ Phase 6 — Runtime feature configs (middleware and system features):
 
 **Key files:**
 
-| Path                                         | Status | Notes                                               |
-| -------------------------------------------- | ------ | --------------------------------------------------- |
-| `backend/packages/harness/deerflow/tracing/` | `[ ]`  | Tracing factory: LangSmith and Langfuse integration |
-| `backend/tests/test_tracing_*.py`            | `[ ]`  | Tracing tests (glob pattern)                        |
+| Path                                                         | Status | Notes                                                                          |
+| ------------------------------------------------------------ | ------ | ------------------------------------------------------------------------------ |
+| `backend/packages/harness/deerflow/tracing/factory.py`       | `[x]`  | Tracing factory; selects and configures LangSmith or Langfuse                  |
+| `backend/packages/harness/deerflow/config/tracing_config.py` | `[x]`  | Tracing provider config; API key and endpoint settings [already annotated §17] |
+| `backend/packages/harness/deerflow/runtime/journal.py`       | `[x]`  | Per-run audit log; structured event entries [already annotated §07]            |
+| `scripts/tool-error-degradation-detection.sh`                | `[x]`  | Shell script for detecting tool error rate degradation                         |
+
+**Study order:**
+
+Phase 1 — Config (read first to understand provider selection before any factory logic):
+
+1. `config/tracing_config.py` [already annotated §17] — re-read specifically for how it integrates with `app_config.py` and which provider it selects
+
+Phase 2 — Tracing factory (the implementation):
+
+1. `tracing/factory.py` — reads tracing_config; instantiates and registers the LangSmith or Langfuse callback handler
+
+Phase 3 — Observability support:
+
+1. `runtime/journal.py` [already annotated §07] — re-read for the per-run audit trail pattern; complements the external tracing pipeline
+2. `scripts/tool-error-degradation-detection.sh` — shell-level error rate monitor; read last as an operational concern
 
 ---
 
@@ -1191,7 +1241,7 @@ Phase 6 — Runtime feature configs (middleware and system features):
 | 17      | Backend: Config System           | [~]    | `modules/17a-config-app-config.md` (phase 1), `modules/17b-config-paths-persistence-agents.md` (phases 2–4), `modules/17d-config-phases5-6.md` (phases 5–6)                                                                                                                          |
 | 18      | Backend: Persistence Layer       | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
 | 19      | Backend: Channels                | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
-| 20      | Backend: Tracing & Observability | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
+| 20      | Backend: Tracing & Observability | [x]    | `modules/20a-tracing-observability.md`                                                                                                                                                                                                                                                                                                                                    |
 | 21      | Backend: Community Integrations  | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
 | 22      | Frontend: Architecture           | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
 | 23      | Frontend: Core Modules           | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
