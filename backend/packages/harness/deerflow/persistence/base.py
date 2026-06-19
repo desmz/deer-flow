@@ -33,6 +33,10 @@ class Base(DeclarativeBase):
             Dict of {column_key: value} for all mapped columns.
         """
         exclude = exclude or set()
+        # [DL-INSIGHT] column_attrs only covers mapped columns, NOT relationships — so to_dict()
+        # never triggers a lazy-load query. Safe to call on detached rows (pairs with engine's expire_on_commit=False).
+        # [DL-NOTE] Mechanical column→value only; repos wrap this in _row_to_dict() to remap *_json
+        # columns (e.g. metadata_json→metadata) and ISO-format datetimes. See run/sql.py, thread_meta/sql.py.
         return {c.key: getattr(self, c.key) for c in sa_inspect(type(self)).mapper.column_attrs if c.key not in exclude}
 
     def __repr__(self) -> str:

@@ -35,6 +35,9 @@ class RunRepository(RunStore):
             normalized = normalized[:128]
         return normalized
 
+    # [DL-INSIGHT] Defensive coercion: run metadata/kwargs are caller-supplied and may hold Pydantic
+    # models or other non-JSON objects. Recurse, then degrade gracefully (model_dump → dict → str) so a
+    # single unserializable value never aborts the whole run write. str() is the never-fail backstop.
     @staticmethod
     def _safe_json(obj: Any) -> Any:
         """Ensure obj is JSON-serializable. Falls back to model_dump() or str()."""
@@ -143,6 +146,9 @@ class RunRepository(RunStore):
             result = await session.execute(stmt)
             return [self._row_to_dict(r) for r in result.scalars()]
 
+    # [DL-INSIGHT] No user_id parameter / owner filter here (nor on update_run_completion). These are
+    # called from trusted background workers keyed by run_id, not from a user request — the worker
+    # already owns the run it's executing, so re-checking ownership would be ceremony. Contrast get/delete.
     async def update_status(self, run_id, status, *, error=None):
         values: dict[str, Any] = {"status": status, "updated_at": datetime.now(UTC)}
         if error is not None:
@@ -167,6 +173,8 @@ class RunRepository(RunStore):
             await session.delete(row)
             await session.commit()
 
+    # [DL-NOTE] Scheduler/recovery path: returns ALL pending runs across users (no owner filter) so a
+    # restarting worker can pick up orphaned runs. ``before`` lets it exclude just-created rows from a sweep.
     async def list_pending(self, *, before=None):
         if before is None:
             before_dt = datetime.now(UTC)
@@ -219,6 +227,9 @@ class RunRepository(RunStore):
             await session.execute(update(RunRow).where(RunRow.run_id == run_id).values(**values))
             await session.commit()
 
+    # [DL-INSIGHT] Pushes the whole rollup into one GROUP BY model_name query instead of pulling rows and
+    # summing in Python — DB does the arithmetic. Only counts terminal runs (success/error); in-flight
+    # runs (still 0 tokens, see model.py) are excluded so partial runs don't show as zero-token entries.
     async def aggregate_tokens_by_thread(self, thread_id: str) -> dict[str, Any]:
         """Aggregate token usage via a single SQL GROUP BY query."""
         _completed = RunRow.status.in_(("success", "error"))

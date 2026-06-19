@@ -890,19 +890,19 @@ Phase 6 — Runtime feature configs (middleware and system features):
 
 | Path                                                                   | Status | Notes                                                                |
 | ---------------------------------------------------------------------- | ------ | -------------------------------------------------------------------- |
-| `backend/packages/harness/deerflow/persistence/engine.py`              | `[ ]`  | SQLAlchemy engine setup; connection pooling and session factory      |
-| `backend/packages/harness/deerflow/persistence/base.py`                | `[ ]`  | Declarative base class; root all ORM models inherit from             |
-| `backend/packages/harness/deerflow/persistence/json_compat.py`         | `[ ]`  | JSON type compatibility layer; handles SQLite/PostgreSQL differences |
-| `backend/packages/harness/deerflow/persistence/models/run_event.py`    | `[ ]`  | ORM model for run events; maps to the event store DB table           |
-| `backend/packages/harness/deerflow/persistence/run/model.py`           | `[ ]`  | ORM model for run records                                            |
-| `backend/packages/harness/deerflow/persistence/run/sql.py`             | `[ ]`  | SQL repository for run records; CRUD over the runs table             |
-| `backend/packages/harness/deerflow/persistence/thread_meta/base.py`    | `[ ]`  | Abstract interface for the thread metadata repository                |
-| `backend/packages/harness/deerflow/persistence/thread_meta/memory.py`  | `[ ]`  | In-memory thread metadata store                                      |
-| `backend/packages/harness/deerflow/persistence/thread_meta/model.py`   | `[ ]`  | ORM model for thread metadata                                        |
-| `backend/packages/harness/deerflow/persistence/thread_meta/sql.py`     | `[ ]`  | SQL repository for thread metadata; CRUD over the thread_meta table  |
-| `backend/packages/harness/deerflow/persistence/feedback/model.py`      | `[ ]`  | ORM model for user feedback entries                                  |
-| `backend/packages/harness/deerflow/persistence/feedback/sql.py`        | `[ ]`  | SQL repository for feedback; CRUD over the feedback table            |
-| `backend/packages/harness/deerflow/persistence/user/model.py`          | `[ ]`  | ORM model for user records                                           |
+| `backend/packages/harness/deerflow/persistence/engine.py`              | `[x]`  | SQLAlchemy engine setup; connection pooling and session factory      |
+| `backend/packages/harness/deerflow/persistence/base.py`                | `[x]`  | Declarative base class; root all ORM models inherit from             |
+| `backend/packages/harness/deerflow/persistence/json_compat.py`         | `[x]`  | JSON type compatibility layer; handles SQLite/PostgreSQL differences |
+| `backend/packages/harness/deerflow/persistence/models/run_event.py`    | `[x]`  | ORM model for run events; maps to the event store DB table           |
+| `backend/packages/harness/deerflow/persistence/run/model.py`           | `[x]`  | ORM model for run records                                            |
+| `backend/packages/harness/deerflow/persistence/run/sql.py`             | `[x]`  | SQL repository for run records; CRUD over the runs table             |
+| `backend/packages/harness/deerflow/persistence/thread_meta/base.py`    | `[x]`  | Abstract interface for the thread metadata repository                |
+| `backend/packages/harness/deerflow/persistence/thread_meta/memory.py`  | `[x]`  | In-memory thread metadata store                                      |
+| `backend/packages/harness/deerflow/persistence/thread_meta/model.py`   | `[x]`  | ORM model for thread metadata                                        |
+| `backend/packages/harness/deerflow/persistence/thread_meta/sql.py`     | `[x]`  | SQL repository for thread metadata; CRUD over the thread_meta table  |
+| `backend/packages/harness/deerflow/persistence/feedback/model.py`      | `[x]`  | ORM model for user feedback entries                                  |
+| `backend/packages/harness/deerflow/persistence/feedback/sql.py`        | `[x]`  | SQL repository for feedback; CRUD over the feedback table            |
+| `backend/packages/harness/deerflow/persistence/user/model.py`          | `[x]`  | ORM model for user records                                           |
 
 **Study order:**
 
@@ -1238,8 +1238,8 @@ Phase 3 — Observability support:
 | 14      | Backend: MCP Integration         | [x]    | `modules/14-mcp-integration.md`                                                                                                                                                                                                                                                                                                                                           |
 | 15      | Backend: Sandbox                 | [x]    | `modules/15a-sandbox-primitives.md` (phase 1: exceptions, sandbox interface, security gate, file lock), `modules/15b-local-sandbox.md` (phase 2: list_dir, LocalSandbox, LocalSandboxProvider), `modules/15c-sandbox-search-tools.md` (phase 3: search.py, tools.py), `modules/15d-sandbox-provider-middleware.md` (phase 4: sandbox_provider.py, middleware.py), `modules/15e-aio-sandbox.md` (phase 5: AIO community sandbox — sandbox_info, backend, local_backend, remote_backend, aio_sandbox, aio_sandbox_provider) |
 | 16      | Backend: Model Layer             | [x]    | `modules/16a-model-layer-credential-patches.md` (phases 1–2: `__init__`, credential_loader, patched_openai, patched_deepseek, patched_minimax), `modules/16b-model-layer-providers.md` (phase 3: claude_provider, vllm_provider, mindie_provider, openai_codex_provider), `modules/16c-model-layer-factory-config.md` (phase 4: config/model_config.py, models/factory.py) |
-| 17      | Backend: Config System           | [~]    | `modules/17a-config-app-config.md` (phase 1), `modules/17b-config-paths-persistence-agents.md` (phases 2–4), `modules/17d-config-phases5-6.md` (phases 5–6)                                                                                                                          |
-| 18      | Backend: Persistence Layer       | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
+| 17      | Backend: Config System           | [x]    | `modules/17a-config-app-config.md` (phase 1), `modules/17b-config-paths-persistence-agents.md` (phases 2–4), `modules/17d-config-phases5-6.md` (phases 5–6)                                                                                                                          |
+| 18      | Backend: Persistence Layer       | [x]    | `modules/18a-persistence-foundation.md` (phase 1: engine, base, json_compat), `modules/18b-orm-models.md` (phase 2: ORM models), `modules/18c-repositories.md` (phase 3: thread_meta base/memory/sql, run/sql, feedback/sql); companion `patterns/soft-references-repository-pattern.md`. |
 | 19      | Backend: Channels                | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |
 | 20      | Backend: Tracing & Observability | [x]    | `modules/20a-tracing-observability.md`                                                                                                                                                                                                                                                                                                                                    |
 | 21      | Backend: Community Integrations  | [ ]    |                                                                                                                                                                                                                                                                                                                                                                           |

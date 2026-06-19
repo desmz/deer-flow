@@ -20,10 +20,15 @@ from typing import Any
 from deerflow.runtime.user_context import AUTO, _AutoSentinel
 
 
+# [DL-NOTE] Raised by sql.py search() when every metadata key fails validation; the Gateway
+# threads router maps this to a 400 so a bad client filter is a client error, not a 500.
 class InvalidMetadataFilterError(ValueError):
     """Raised when all client-supplied metadata filter keys are rejected."""
 
 
+# [DL-INSIGHT] One abstract contract, two backends chosen at runtime by make_thread_store():
+# ThreadMetaRepository (SQL) when a session_factory exists, else MemoryThreadMetaStore (LangGraph
+# BaseStore). Routers depend only on this ABC, so swapping backends needs no router changes.
 class ThreadMetaStore(abc.ABC):
     @abc.abstractmethod
     async def create(
@@ -71,6 +76,9 @@ class ThreadMetaStore(abc.ABC):
         """
         pass
 
+    # [DL-INSIGHT] require_existing flips read-vs-destructive semantics: False (read) treats a missing
+    # row as accessible (legacy backward-compat); True (DELETE/PATCH) treats missing as denied so a
+    # deleted thread can't be retargeted cross-user. See authz.py owner_check + sql.py docstring.
     @abc.abstractmethod
     async def check_access(self, thread_id: str, user_id: str, *, require_existing: bool = False) -> bool:
         """Check if ``user_id`` has access to ``thread_id``."""

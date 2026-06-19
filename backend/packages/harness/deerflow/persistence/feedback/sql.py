@@ -15,6 +15,8 @@ from deerflow.persistence.feedback.model import FeedbackRow
 from deerflow.runtime.user_context import AUTO, _AutoSentinel, resolve_user_id
 
 
+# [DL-NOTE] Unlike RunRepository/ThreadMetaRepository, this has NO abstract base and no in-memory twin —
+# feedback only exists in SQL mode. The memory database backend simply has no feedback store.
 class FeedbackRepository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._sf = session_factory
@@ -136,6 +138,9 @@ class FeedbackRepository:
             raise ValueError(f"rating must be +1 or -1, got {rating}")
         resolved_user_id = resolve_user_id(user_id, method_name="FeedbackRepository.upsert")
         async with self._sf() as session:
+            # [DL-INSIGHT] Read-then-write upsert (not an atomic INSERT..ON CONFLICT). The select+branch
+            # has a race window, but the uq_feedback_thread_run_user constraint (model.py) is the backstop:
+            # a losing concurrent insert raises IntegrityError rather than creating a duplicate rating.
             stmt = select(FeedbackRow).where(
                 FeedbackRow.thread_id == thread_id,
                 FeedbackRow.run_id == run_id,
@@ -200,6 +205,9 @@ class FeedbackRepository:
             result = await session.execute(stmt)
             return {row.run_id: self._row_to_dict(row) for row in result.scalars()}
 
+    # [DL-INSIGHT] Aggregates across ALL users (no owner filter) — this is run-level sentiment, not the
+    # current user's view. case()-sum counts +1/-1 in SQL; an out-of-range rating (no DB CHECK, see
+    # model.py) lands in neither bucket, so total can exceed positive+negative.
     async def aggregate_by_run(self, thread_id: str, run_id: str) -> dict:
         """Aggregate feedback stats for a run using database-side counting."""
         stmt = select(

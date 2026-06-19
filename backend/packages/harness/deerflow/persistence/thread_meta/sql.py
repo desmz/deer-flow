@@ -23,6 +23,9 @@ class ThreadMetaRepository(ThreadMetaStore):
 
     @staticmethod
     def _row_to_dict(row: ThreadMetaRow) -> dict[str, Any]:
+        # [DL-INSIGHT] Adapter layer: Base.to_dict() gives raw columns, but callers expect the public
+        # shape — remap the reserved-name dodge metadata_json→metadata and ISO-stringify datetimes so
+        # the SQL and memory backends return byte-identical dicts. See model.py for the naming dodge.
         d = row.to_dict()
         d["metadata"] = d.pop("metadata_json", None) or {}
         for key in ("created_at", "updated_at"):
@@ -120,6 +123,8 @@ class ThreadMetaRepository(ThreadMetaStore):
         context. Pass ``user_id=None`` to bypass (migration/CLI).
         """
         resolved_user_id = resolve_user_id(user_id, method_name="ThreadMetaRepository.search")
+        # [DL-NOTE] thread_id is the tiebreaker in the sort so pagination is deterministic when many
+        # rows share the same updated_at (e.g. a batch created in one transaction).
         stmt = select(ThreadMetaRow).order_by(ThreadMetaRow.updated_at.desc(), ThreadMetaRow.thread_id.desc())
         if resolved_user_id is not None:
             stmt = stmt.where(ThreadMetaRow.user_id == resolved_user_id)
@@ -129,11 +134,15 @@ class ThreadMetaRepository(ThreadMetaStore):
         if metadata:
             applied = 0
             for key, value in metadata.items():
+                # [DL-INSIGHT] json_match validates the key before emitting dialect-specific JSON SQL
+                # (see json_compat.py); an unsafe key raises and is skipped+logged rather than injected.
                 try:
                     stmt = stmt.where(json_match(ThreadMetaRow.metadata_json, key, value))
                     applied += 1
                 except (ValueError, TypeError) as exc:
                     logger.warning("Skipping metadata filter key %s: %s", ascii(key), exc)
+            # [DL-WARN] Only ALL-rejected raises; a partial reject silently narrows the filter. The
+            # caller can't tell which keys applied — by design (best-effort filter, hard-fail only if useless).
             if applied == 0:
                 # Comma-separated plain string (no list repr / nested
                 # quoting) so the 400 detail surfaced by the Gateway is
@@ -146,6 +155,8 @@ class ThreadMetaRepository(ThreadMetaStore):
             result = await session.execute(stmt)
             return [self._row_to_dict(r) for r in result.scalars()]
 
+    # [DL-NOTE] Used by the two blind UPDATEs (display_name, status) that don't otherwise load the row.
+    # delete() and update_metadata() skip this helper because they already fetch the row for their work.
     async def _check_ownership(self, session: AsyncSession, thread_id: str, resolved_user_id: str | None) -> bool:
         """Return True if the row exists and is owned (or filter bypassed)."""
         if resolved_user_id is None:

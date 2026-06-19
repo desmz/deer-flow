@@ -193,3 +193,16 @@ Running log of unresolved questions across all study sections.
 - **`str_replace` lock scope**: The lock in `tools.py` is acquired around the `str_replace` operation (line 1564). Does it cover the entire read-modify-write sequence, or only the final write? A TOCTOU race exists if two threads both read before either writes — verify in `tools.py` Phase 3.
 - **`update_file` callers**: What calls `update_file` in practice? The interface defines it for binary writes, but no callsite was found in Phase 1. Likely surfaced in Phase 3 (tools) or Phase 5 (AIO sandbox).
 - **`id(sandbox)` key collision risk**: `get_file_operation_lock_key` falls back to `f"instance:{id(sandbox)}"` for sandboxes with no `id` attribute. If a sandbox is GC'd and a new one allocated at the same memory address, two distinct sandbox instances could share a lock key. Only a real risk if anonymous sandboxes are used in production (they appear to be test-only), but worth confirming.
+
+## Section 18 — Backend: Persistence Layer (Phase 3 repositories)
+
+- **Backend dict-shape parity**: `MemoryThreadMetaStore` and `ThreadMetaRepository` both return plain `dict`, with parity enforced only by mirrored hand-written builders (`_item_to_dict` vs `_row_to_dict`). Does `test_memory_thread_meta_isolation.py` assert identical key sets between the two backends, or only owner-isolation behaviour? A field added to one and forgotten in the other would not fail to compile.
+- **Feedback `rating` has no DB CHECK**: the `+1/-1` invariant is Python-only (`sql.py` raises `ValueError`). A direct DB/migration write of an out-of-range rating would make `aggregate_by_run` report `total > positive + negative` (case()-sum buckets miss it). Acceptable while the repo is the only writer — but should a CHECK be added when Postgres becomes primary?
+- **Feedback `created_at` semantics**: `upsert` re-stamps `created_at` on every edit and there is no `updated_at` column, so for an edited rating the field means "last modified", not "first created". Does any consumer rely on it meaning first-created?
+
+## Section 18 — Backend: Persistence Layer (Phase 1 — Foundation)
+
+- **Postgres auto-create matches on error text, not a typed exception**: `engine.py` keys the auto-create-database fallback off `"does not exist" in str(exc)`. Could this substring match unrelated errors (missing table/schema/role)? Would catching asyncpg's typed `InvalidCatalogName` be safer? Low risk (only fires on first boot) but fragile.
+- **`create_all` vs schema evolution**: `init_engine` auto-creates tables, but `create_all` is a no-op on existing tables — adding a column to a model will not alter a live DB. There are Alembic migrations in `persistence/migrations/`; how is their state kept consistent with the dev-time `create_all` path? (Defer to migrations study.)
+- **Default `@compiles` unreachable today**: `JsonMatch`'s fallback compiler raises `NotImplementedError` for non-sqlite/postgres dialects, but only `memory`/`sqlite`/`postgres` are supported — so it can't fire. Clean fail-closed guard for a future 4th backend; noting intent only.
+- **`sqlite_where` partial index is SQLite-only** (carried over from `18b` `UserRow`): if Postgres becomes a prod backend, partial unique indexes need a `postgresql_where` mirror or the predicate is silently ignored.

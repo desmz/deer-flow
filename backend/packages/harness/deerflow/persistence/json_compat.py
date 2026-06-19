@@ -68,6 +68,10 @@ class JsonMatch(ColumnElement):
     *value* must be one of: ``None``, ``bool``, ``int`` (signed 64-bit), ``float``, ``str``.
     """
 
+    # [DL-INSIGHT] SQLAlchemy statement-cache contract: inherit_cache=True + _traverse_internals
+    # tell the cache how to fingerprint this element so two JsonMatch(es) with different key/value
+    # don't collide on the same cached SQL. dp_plain_obj requires value to be HASHABLE — this is
+    # the real reason list/dict values are rejected in validate_metadata_filter_value (not just type safety).
     inherit_cache = True
     type = Boolean()
     _is_implicitly_boolean = True
@@ -131,6 +135,10 @@ _PG = _Dialect(
 )
 
 
+# [DL-INSIGHT] The security asymmetry: VALUES flow through bindparam (parameterized — driver
+# escapes them, injection-proof), but KEYS are string-interpolated into the SQL path expression
+# ($."key" / -> 'key') because they're structural, not bindable. That's why keys get the strict
+# [A-Za-z0-9_-]+ charset gate while values only get a type/range gate.
 def _bind(compiler: SQLCompiler, value: object, sa_type: TypeEngine[Any], **kw: Any) -> str:
     param = bindparam(None, value, type_=sa_type)
     return compiler.process(param, **kw)
@@ -148,6 +156,8 @@ def _build_clause(compiler: SQLCompiler, typeof: str, extract: str, value: objec
         return f"{typeof} = '{dialect.null_type}'"
     if isinstance(value, bool):
         # bool check must precede int check — bool is a subclass of int in Python
+        # [DL-WARN] If this branch moved below the int branch, True/False would compile as 1/0 integer
+        # comparisons and silently mismatch JSON booleans. Order is load-bearing, not stylistic.
         bool_str = "true" if value else "false"
         if dialect.bool_type is None:
             return f"{typeof} = '{bool_str}'"
@@ -165,8 +175,13 @@ def _build_clause(compiler: SQLCompiler, typeof: str, extract: str, value: objec
     return f"({typeof} = '{dialect.string_type}' AND {extract} = {bp})"
 
 
+# [DL-INSIGHT] @compiles registers per-dialect SQL emitters for the custom element. SQLite has
+# native JSON1 (json_type/json_extract, JSONPath '$."key"'); PostgreSQL uses operators (json_typeof, ->>).
+# Same Python expression, two completely different SQL strings — the dialect-portability core.
 @compiles(JsonMatch, "sqlite")
 def _compile_sqlite(element: JsonMatch, compiler: SQLCompiler, **kw: Any) -> str:
+    # [DL-NOTE] Defense in depth: key is re-validated at compile time even though __init__ already
+    # checked it — guards against any path that mutates element.key after construction.
     if not validate_metadata_filter_key(element.key):
         raise ValueError(f"Key escaped validation: {element.key!r}")
     col = compiler.process(element.column, **kw)

@@ -15,9 +15,13 @@ from deerflow.persistence.thread_meta.base import ThreadMetaStore
 from deerflow.runtime.user_context import AUTO, _AutoSentinel, resolve_user_id
 from deerflow.utils.time import coerce_iso, now_iso
 
+# [DL-INSIGHT] Reuses the SAME ("threads",) namespace the Gateway router already writes to, so the
+# memory backend shares one source of truth with LangGraph thread records — no parallel store to sync.
 THREADS_NS: tuple[str, ...] = ("threads",)
 
 
+# [DL-NOTE] The memory mirror of ThreadMetaRepository (sql.py) — identical contract, BaseStore instead
+# of SQLAlchemy. Selected by make_thread_store when database.backend=memory (no session_factory).
 class MemoryThreadMetaStore(ThreadMetaStore):
     def __init__(self, store: BaseStore) -> None:
         self._store = store
@@ -33,6 +37,8 @@ class MemoryThreadMetaStore(ThreadMetaStore):
         item = await self._store.aget(THREADS_NS, thread_id)
         if item is None:
             return None
+        # [DL-NOTE] Copy out of item.value so update_* can mutate then aput() back without
+        # accidentally writing through the store's cached object (read-modify-write safety).
         record = dict(item.value)
         if resolved is not None and record.get("user_id") != resolved:
             return None
@@ -84,6 +90,9 @@ class MemoryThreadMetaStore(ThreadMetaStore):
         if resolved_user_id is not None:
             filter_dict["user_id"] = resolved_user_id
 
+        # [DL-INSIGHT] Unlike sql.py, metadata keys go straight into the store filter with no
+        # validation/rejection — the memory backend has no SQL-injection surface, so the
+        # InvalidMetadataFilterError path simply doesn't exist here.
         items = await self._store.asearch(
             THREADS_NS,
             filter=filter_dict or None,
@@ -93,6 +102,8 @@ class MemoryThreadMetaStore(ThreadMetaStore):
         return [self._item_to_dict(item) for item in items]
 
     async def check_access(self, thread_id: str, user_id: str, *, require_existing: bool = False) -> bool:
+        # [DL-NOTE] Mirrors sql.py exactly: missing row → not require_existing; null owner → shared
+        # (True); else exact match. Keeps the two backends interchangeable for authz owner_check.
         item = await self._store.aget(THREADS_NS, thread_id)
         if item is None:
             return not require_existing

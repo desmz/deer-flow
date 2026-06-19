@@ -16,6 +16,8 @@ import logging
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 
+# [DL-INSIGHT] Default SQLAlchemy JSON serializer escapes non-ASCII as \uXXXX; ensure_ascii=False
+# preserves Chinese/Japanese/Korean characters as-is in JSON columns — important for CJK users.
 def _json_serializer(obj: object) -> str:
     """JSON serializer with ensure_ascii=False for Chinese character support."""
     return json.dumps(obj, ensure_ascii=False)
@@ -23,6 +25,8 @@ def _json_serializer(obj: object) -> str:
 
 logger = logging.getLogger(__name__)
 
+# [DL-NOTE] Module-level singletons — one engine and one session factory for the entire process lifetime.
+# Initialized once in langgraph_runtime() lifespan; repositories call get_session_factory() to acquire sessions.
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 
@@ -45,6 +49,7 @@ async def _auto_create_postgres_db(url: str) -> None:
 
     # Connect to the default 'postgres' database to issue CREATE DATABASE
     maint_url = parsed.set(database="postgres")
+    # [DL-INSIGHT] AUTOCOMMIT is required — CREATE DATABASE cannot run inside a transaction block.
     maint_engine = create_async_engine(maint_url, isolation_level="AUTOCOMMIT")
     try:
         async with maint_engine.connect() as conn:
@@ -73,10 +78,13 @@ async def init_engine(
     """
     global _engine, _session_factory
 
+    # [DL-NOTE] "memory" is a no-op: no engine, no session factory.
+    # Repositories call get_session_factory() and must fall back to in-memory implementations when it returns None.
     if backend == "memory":
         logger.info("Persistence backend=memory -- ORM engine not initialized")
         return
 
+    # [DL-NOTE] Fail fast with a human-readable install hint rather than a cryptic driver error at first query.
     if backend == "postgres":
         try:
             import asyncpg  # noqa: F401
@@ -112,6 +120,8 @@ async def init_engine(
         # ``timeout`` kwarg of ``sqlite3.connect``), and aiosqlite /
         # SQLAlchemy's aiosqlite dialect inherit that default.  Setting
         # it again would be a no-op.
+        # [DL-INSIGHT] PRAGMA settings are per-connection in SQLite, not per-database.
+        # Wiring a listener ensures every new connection in the pool gets WAL mode — setting it once at startup would be insufficient.
         @event.listens_for(_engine.sync_engine, "connect")
         def _enable_sqlite_wal(dbapi_conn, _record):  # noqa: ARG001 — SQLAlchemy contract
             cursor = dbapi_conn.cursor()
@@ -122,6 +132,7 @@ async def init_engine(
             finally:
                 cursor.close()
     elif backend == "postgres":
+        # [DL-NOTE] pool_pre_ping sends a lightweight SELECT 1 before each checkout — detects stale connections after DB restart.
         _engine = create_async_engine(
             url,
             echo=echo,
@@ -132,11 +143,16 @@ async def init_engine(
     else:
         raise ValueError(f"Unknown persistence backend: {backend!r}")
 
+    # [DL-INSIGHT] expire_on_commit=False: keeps ORM attribute values loaded after commit.
+    # Without this, async SQLAlchemy would trigger lazy-load queries on committed objects, which raises errors outside a session.
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
 
     # Auto-create tables (dev convenience). Production should use Alembic.
+    # [DL-NOTE] Deferred import of Base avoids circular imports — engine.py must stay a leaf module.
     from deerflow.persistence.base import Base
 
+    # [DL-INSIGHT] All ORM model classes must be imported before create_all — SQLAlchemy only
+    # knows about tables whose models have been imported into the Base.metadata registry.
     # Import all models so Base.metadata discovers them.
     # When no models exist yet (scaffolding phase), this is a no-op.
     try:
@@ -150,6 +166,7 @@ async def init_engine(
         async with _engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
     except Exception as exc:
+        # [DL-NOTE] Auto-create Postgres DB on first run — dev convenience so engineers don't need to pre-create the DB manually.
         if backend == "postgres" and "does not exist" in str(exc):
             # Database not yet created — attempt to auto-create it, then retry.
             await _auto_create_postgres_db(url)
