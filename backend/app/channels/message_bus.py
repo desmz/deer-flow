@@ -52,6 +52,8 @@ class InboundMessage:
     text: str
     msg_type: InboundMessageType = InboundMessageType.CHAT
     thread_ts: str | None = None
+    # [DL-INSIGHT] topic_id is the conversation-continuity key: same topic_id under a
+    # chat_id reuses one DeerFlow thread; None = fresh thread per message (one-shot Q&A).
     topic_id: str | None = None
     files: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -123,6 +125,10 @@ class MessageBus:
     """
 
     def __init__(self) -> None:
+        # [DL-INSIGHT] Asymmetric design: inbound = single Queue (fan-in, many channels →
+        # one dispatch loop); outbound = callback list (fan-out, one dispatcher → all channels).
+        # [DL-WARN] asyncio.Queue is bound to the event loop and is NOT thread-safe — channels
+        # whose SDK runs on its own thread (slack, discord) must use run_coroutine_threadsafe.
         self._inbound_queue: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self._outbound_listeners: list[OutboundCallback] = []
 
@@ -141,6 +147,8 @@ class MessageBus:
 
     async def get_inbound(self) -> InboundMessage:
         """Block until the next inbound message is available."""
+        # [DL-NOTE] Single consumer: ChannelManager._dispatch_loop() drains this queue and
+        # spawns one task per message (see manager.py:676). No competing consumers.
         return await self._inbound_queue.get()
 
     @property
@@ -155,6 +163,8 @@ class MessageBus:
 
     def unsubscribe_outbound(self, callback: OutboundCallback) -> None:
         """Remove a previously registered outbound callback."""
+        # [DL-NOTE] Identity comparison (`is not`), not equality — each channel passes its own
+        # bound method self._on_outbound, so stop() removes exactly that channel's listener.
         self._outbound_listeners = [cb for cb in self._outbound_listeners if cb is not callback]
 
     async def publish_outbound(self, msg: OutboundMessage) -> None:
@@ -166,6 +176,10 @@ class MessageBus:
             len(self._outbound_listeners),
             len(msg.text),
         )
+        # [DL-INSIGHT] Broadcast to ALL listeners regardless of target — routing is the
+        # listener's job: each channel's _on_outbound self-filters on msg.channel_name (base.py:103).
+        # [DL-WARN] Sequential await + per-callback try/except: one slow/failing channel delays
+        # the rest, but its exception is swallowed (logged only) so siblings still receive the msg.
         for callback in self._outbound_listeners:
             try:
                 await callback(msg)

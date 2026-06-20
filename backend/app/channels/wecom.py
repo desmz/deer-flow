@@ -24,15 +24,24 @@ class WeComChannel(Channel):
         self._bot_id: str | None = None
         self._bot_secret: str | None = None
         self._ws_client = None
+        # [DL-INSIGHT] Natively-async SDK: the WS client runs as an asyncio task on the BUS loop
+        # (see start()). No second thread/loop, so no cross-loop bridging — unlike Slack/Telegram.
         self._ws_task: asyncio.Task | None = None
+        # [DL-INSIGHT] Per-message reply state, keyed by msgid (== thread_ts). _ws_frames holds the
+        # original inbound frame (needed to address a reply); _ws_stream_ids holds the stream id so
+        # successive outbound chunks patch the SAME streaming bubble instead of posting new messages.
         self._ws_frames: dict[str, dict[str, Any]] = {}
         self._ws_stream_ids: dict[str, str] = {}
         self._working_message = "Working on it..."
 
+    # [DL-INSIGHT] True → manager drives this channel with runs.stream() and emits incremental
+    # outbound updates (is_final=False…True), like Feishu/DingTalk. See: app/channels/base.py.
     @property
     def supports_streaming(self) -> bool:
         return True
 
+    # [DL-NOTE] Lifecycle cleanup: drop the per-message frame/stream state once the final outbound
+    # for a turn is sent (called from _on_outbound on is_final), so the dicts don't leak forever.
     def _clear_ws_context(self, thread_ts: str | None) -> None:
         if not thread_ts:
             return
@@ -44,6 +53,8 @@ class WeComChannel(Channel):
             raise RuntimeError("WeCom WebSocket client is not available")
 
         ws_manager = getattr(self._ws_client, "_ws_manager", None)
+        # [DL-WARN] Fragile coupling: reaches into the SDK's private _ws_manager.send_reply. Guarded
+        # with a version check that fails loudly, but a SDK refactor would silently break uploads.
         send_reply = getattr(ws_manager, "send_reply", None)
         if not callable(send_reply):
             raise RuntimeError("Installed wecom-aibot-python-sdk does not expose the WebSocket media upload API expected by DeerFlow. Use wecom-aibot-python-sdk==0.1.6 or update the adapter.")
@@ -78,6 +89,8 @@ class WeComChannel(Channel):
             self._ws_client.on("message.mixed", self._on_ws_mixed)
             self._ws_client.on("message.image", self._on_ws_image)
             self._ws_client.on("message.file", self._on_ws_file)
+            # [DL-INSIGHT] connect() is awaitable → scheduled as a task on the current (bus) loop.
+            # Contrast Slack (run_in_executor) and Telegram (dedicated thread + own loop).
             self._ws_task = asyncio.create_task(self._ws_client.connect())
 
             self._running = True
@@ -133,6 +146,8 @@ class WeComChannel(Channel):
             self._clear_ws_context(msg.thread_ts)
 
     async def send_file(self, msg: OutboundMessage, attachment: ResolvedAttachment) -> bool:
+        # [DL-INSIGHT] Streaming sends many non-final text updates; defer all file uploads until the
+        # final message. Return True (not False) so _on_outbound doesn't log a spurious "skipped".
         if not msg.is_final:
             return True
         if not self._ws_client:
@@ -280,12 +295,18 @@ class WeComChannel(Channel):
             files=files or [],
             metadata={"aibotid": body.get("aibotid"), "chattype": body.get("chattype")},
         )
+        # [DL-INSIGHT] chat_id AND topic_id both = user_id → one persistent DeerFlow thread per user
+        # (store key "wecom:user_id"), like Telegram private chats. WeCom has no thread concept.
         inbound.topic_id = user_id  # keep the same thread
 
+        # [DL-INSIGHT] Allocate the stream id and stash frame+stream BEFORE publishing inbound, so by
+        # the time outbound chunks arrive (_send_ws) the streaming bubble already exists to patch.
         stream_id = generate_req_id("stream")
         self._ws_frames[msg_id] = frame
         self._ws_stream_ids[msg_id] = stream_id
 
+        # [DL-NOTE] Open the stream with a "Working on it..." placeholder (final=False); best-effort,
+        # failure to show it must not block the actual run from being enqueued.
         try:
             await self._ws_client.reply_stream(frame, stream_id, self._working_message, False)
         except Exception:
@@ -301,6 +322,9 @@ class WeComChannel(Channel):
         except Exception:
             generate_req_id = None
 
+        # [DL-INSIGHT] Two outbound paths: (1) if we still hold the inbound frame, patch the live
+        # stream via reply_stream (incremental, in-place); (2) otherwise fall back to a proactive
+        # send_message markdown post — used when context was cleared or for unsolicited messages.
         if msg.thread_ts and msg.thread_ts in self._ws_frames:
             frame = self._ws_frames[msg.thread_ts]
             stream_id = self._ws_stream_ids.get(msg.thread_ts)
@@ -350,6 +374,9 @@ class WeComChannel(Channel):
         except Exception:
             return None
 
+        # [DL-INSIGHT] Chunked media upload over WS: init → N chunks (base64) → finish, returning a
+        # media_id that send_file then references. md5 of the whole file is sent up front for the
+        # server to verify reassembly. 100-chunk cap × 512KB ⇒ ~50MB hard ceiling.
         chunk_size = 512 * 1024
         total_chunks = (size + chunk_size - 1) // chunk_size
         if total_chunks < 1 or total_chunks > 100:

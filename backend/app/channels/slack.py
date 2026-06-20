@@ -1,3 +1,5 @@
+# [DL-INSIGHT] Socket Mode = outbound WebSocket from the bot to Slack, so no inbound webhook
+# URL / public IP is needed. Trade-off: the SDK runs its own background thread (see start()).
 """Slack channel — connects via Socket Mode (no public IP needed)."""
 
 from __future__ import annotations
@@ -16,6 +18,8 @@ logger = logging.getLogger(__name__)
 _slack_md_converter = SlackMarkdownConverter()
 
 
+# [DL-NOTE] Defensive coercion of a free-form YAML value (str | list | scalar) into a set;
+# tolerates misconfig (logs a warning) rather than crashing channel startup.
 def _normalize_allowed_users(allowed_users: Any) -> set[str]:
     if allowed_users is None:
         return set()
@@ -54,6 +58,8 @@ class SlackChannel(Channel):
         if self._running:
             return
 
+        # [DL-INSIGHT] Lazy import: slack-sdk is an optional dependency. A missing package
+        # disables only this channel (log + return) instead of breaking the whole app at import.
         try:
             from slack_sdk import WebClient
             from slack_sdk.socket_mode import SocketModeClient
@@ -76,6 +82,8 @@ class SlackChannel(Channel):
             app_token=app_token,
             web_client=self._web_client,
         )
+        # [DL-INSIGHT] Capture the running event loop here so the SDK's background thread can
+        # bridge back into it via run_coroutine_threadsafe (see _handle_message_event).
         self._loop = asyncio.get_event_loop()
 
         self._socket_client.socket_mode_request_listeners.append(self._on_socket_event)
@@ -83,6 +91,8 @@ class SlackChannel(Channel):
         self._running = True
         self.bus.subscribe_outbound(self._on_outbound)
 
+        # [DL-WARN] connect() spawns/uses a non-asyncio worker thread; every _on_socket_event
+        # callback therefore runs OFF the event loop — that's why thread→loop bridging is needed.
         # Start socket mode in background thread
         asyncio.get_event_loop().run_in_executor(None, self._socket_client.connect)
         logger.info("Slack channel started")
@@ -106,6 +116,10 @@ class SlackChannel(Channel):
         if msg.thread_ts:
             kwargs["thread_ts"] = msg.thread_ts
 
+        # [DL-INSIGHT] WebClient is synchronous/blocking; asyncio.to_thread offloads each call so
+        # the dispatcher event loop is never blocked on Slack HTTP I/O.
+        # [DL-NOTE] Exponential backoff (1s, 2s) over 3 attempts; success/failure is also signalled
+        # to the user via thread reactions (✅ / ❌) rather than a text reply.
         last_exc: Exception | None = None
         for attempt in range(_max_retries):
             try:
@@ -202,6 +216,8 @@ class SlackChannel(Channel):
     def _on_socket_event(self, client, req) -> None:
         """Called by slack-sdk for each Socket Mode event."""
         try:
+            # [DL-WARN] Slack requires an ACK within 3s or it redelivers the envelope; ACK first,
+            # before any processing, to avoid duplicate event handling.
             # Acknowledge the event
             response = self._SocketModeResponse(envelope_id=req.envelope_id)
             client.send_socket_mode_response(response)
@@ -221,6 +237,8 @@ class SlackChannel(Channel):
             logger.exception("Error processing Slack event")
 
     def _handle_message_event(self, event: dict) -> None:
+        # [DL-WARN] Loop guard: the bot's own replies arrive back as message events. Dropping
+        # bot_id / subtype messages prevents the bot from answering itself indefinitely.
         # Ignore bot messages
         if event.get("bot_id") or event.get("subtype"):
             return
@@ -237,6 +255,9 @@ class SlackChannel(Channel):
             return
 
         channel_id = event.get("channel", "")
+        # [DL-INSIGHT] Threaded reply → reuse the root's thread_ts (continues an existing topic);
+        # top-level message → fall back to its own ts (starts a new topic). This single line is
+        # what maps Slack threads onto DeerFlow's topic_id continuity model.
         thread_ts = event.get("thread_ts") or event.get("ts", "")
 
         if text.startswith("/"):
@@ -261,4 +282,7 @@ class SlackChannel(Channel):
             self._add_reaction(channel_id, event.get("ts", thread_ts), "eyes")
             # Send "running" reply first (fire-and-forget from SDK thread)
             self._send_running_reply(channel_id, thread_ts)
+            # [DL-INSIGHT] The thread→loop bridge: we're on the SDK's worker thread, but the bus
+            # queue lives on the event loop. run_coroutine_threadsafe is the only safe way to
+            # enqueue from here (asyncio.Queue is not thread-safe — see message_bus.py).
             asyncio.run_coroutine_threadsafe(self.bus.publish_inbound(inbound), self._loop)

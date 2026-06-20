@@ -31,6 +31,8 @@ class Channel(ABC):
     def is_running(self) -> bool:
         return self._running
 
+    # [DL-INSIGHT] Capability flag, default off. Feishu/DingTalk override to True so the
+    # manager picks runs.stream() (incremental card patches) vs runs.wait() (one-shot reply).
     @property
     def supports_streaming(self) -> bool:
         return False
@@ -96,6 +98,8 @@ class Channel(ABC):
         File uploads are skipped entirely when the text send fails to avoid
         partial deliveries (files without accompanying text).
         """
+        # [DL-INSIGHT] Every channel subscribes to ALL outbound messages and self-filters
+        # by name — bus fan-out is O(channels), routing lives here not in the bus.
         if msg.channel_name == self.name:
             try:
                 await self.send(msg)
@@ -111,6 +115,8 @@ class Channel(ABC):
                 except Exception:
                     logger.exception("[%s] failed to upload file %s", self.name, attachment.filename)
 
+    # [DL-NOTE] Template-method hook: no-op default; FeishuChannel overrides to download
+    # inbound attachments into the sandbox and rewrite msg.text with their paths.
     async def receive_file(self, msg: InboundMessage, thread_id: str) -> InboundMessage:
         """
         Optionally process and materialize inbound file attachments for this channel.

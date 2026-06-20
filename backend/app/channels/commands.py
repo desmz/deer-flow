@@ -8,6 +8,8 @@ required.
 
 from __future__ import annotations
 
+# [DL-INSIGHT] Single source of truth: channel parsers and the manager dispatcher both
+# read this set, so adding/removing a command is one edit and they never drift apart.
 KNOWN_CHANNEL_COMMANDS: frozenset[str] = frozenset(
     {
         "/bootstrap",

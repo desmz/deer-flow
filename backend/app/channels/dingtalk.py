@@ -101,6 +101,9 @@ def _convert_markdown_table(text: str) -> str:
     return "\n".join(result)
 
 
+# [DL-INSIGHT] DingTalk's sampleMarkdown renderer is weak: no fenced code, no tables, no <hr>.
+# Rather than send broken output, the adapter DOWNGRADES markdown into renderable equivalents
+# (code→blockquote, inline code→bold, table→key:value quotes, hr→dashes). Lossy but legible.
 def _adapt_markdown_for_dingtalk(text: str) -> str:
     """Adapt markdown for DingTalk's limited sampleMarkdown renderer."""
 
@@ -139,6 +142,9 @@ class DingTalkChannel(Channel):
         self._incoming_messages_lock = threading.Lock()
         self._card_repliers: dict[str, Any] = {}
 
+    # [DL-INSIGHT] Streaming is OPT-IN per install: only when card_template_id is configured does
+    # the manager pick runs.stream() (incremental card patches). No template → runs.wait() one-shot.
+    # The same channel class is one-shot or streaming purely on config. See: base.py supports_streaming.
     @property
     def supports_streaming(self) -> bool:
         return bool(self._card_template_id)
@@ -162,6 +168,8 @@ class DingTalkChannel(Channel):
 
         self._client_id = client_id
         self._client_secret = client_secret
+        # [DL-NOTE] Dual-loop pattern (shared with discord/telegram): capture the bus loop here;
+        # dingtalk-stream's WebSocket runs on its own loop in _run_stream's thread.
         self._main_loop = asyncio.get_running_loop()
 
         if self._card_template_id:
@@ -206,6 +214,8 @@ class DingTalkChannel(Channel):
 
         Uses msg.chat_id as the primary routing key; metadata as fallback.
         """
+        # [DL-NOTE] Routing key differs by conversation type: groups address by conversation_id,
+        # P2P by sender_staff_id. chat_id is the authoritative source; metadata is the fallback.
         conversation_type = _normalize_conversation_type(msg.metadata.get("conversation_type"))
         sender_staff_id = msg.metadata.get("sender_staff_id", "")
         conversation_id = msg.metadata.get("conversation_id", "")
@@ -223,6 +233,10 @@ class DingTalkChannel(Channel):
         source_key = self._make_card_source_key_from_outbound(msg)
         out_track_id = self._card_track_ids.get(source_key)
 
+        # [DL-INSIGHT] source_key correlates this outbound back to the inbound that opened the card
+        # (created in _send_running_reply). out_track_id is the live card handle to patch in place.
+        # [DL-WARN] If card creation failed there's no track id: drop non-final chunks (they'd each
+        # become a separate sampleMarkdown post = spam) and only let the final one fall through.
         # ``card_template_id`` enables ``runs.stream`` (non-final + final outbounds).
         # If card creation failed, skip non-final chunks to avoid duplicate messages.
         if self._card_template_id and not out_track_id and not msg.is_final:
@@ -236,6 +250,9 @@ class DingTalkChannel(Channel):
                     is_finalize=msg.is_final,
                 )
             except Exception:
+                # [DL-NOTE] Card patch failed mid-stream: swallow non-final failures (the next chunk
+                # retries the same card), but on the FINAL chunk fall back to a one-shot markdown post
+                # so the user still gets the complete answer rather than a half-streamed card.
                 logger.warning("[DingTalk] card stream failed, falling back to sampleMarkdown")
                 if msg.is_final:
                     self._card_track_ids.pop(source_key, None)
@@ -402,6 +419,9 @@ class DingTalkChannel(Channel):
             else:
                 msg_type = InboundMessageType.CHAT
 
+            # [DL-INSIGHT] Per-platform topic_id policy: P2P → None = one persistent DeerFlow thread
+            # per user (continuity, like Telegram DMs). Group → msg_id = every message is its own
+            # one-shot topic (no continuity, like Feishu). Same channel, two continuity models.
             # P2P: topic_id=None (single thread per user, like Telegram private chat)
             # Group: topic_id=msg_id (each new message starts a new topic, like Feishu)
             topic_id: str | None = msg_id if conversation_type == _CONVERSATION_TYPE_GROUP else None
@@ -452,6 +472,10 @@ class DingTalkChannel(Channel):
         return ""
 
     async def _prepare_inbound(self, chat_id: str, inbound: InboundMessage) -> None:
+        # [DL-INSIGHT] Ordering is load-bearing: the running reply CREATES the AI card and registers
+        # out_track_id in _card_track_ids. It MUST complete before publish_inbound, because the
+        # manager may emit streaming outbounds almost immediately — and send() needs the track id to
+        # patch the card rather than spawn duplicate posts. This is why card creation isn't lazy.
         # Running reply must finish before publish_inbound so AI card tracks are
         # registered before the manager emits streaming outbounds.
         await self._send_running_reply(chat_id, inbound)
@@ -489,6 +513,9 @@ class DingTalkChannel(Channel):
     # -- DingTalk API helpers ----------------------------------------------
 
     async def _get_access_token(self) -> str:
+        # [DL-NOTE] Double-checked locking: fast path returns the cached token lock-free; only on a
+        # miss do we take the lock, then re-check (a concurrent caller may have just refreshed it).
+        # Expiry uses monotonic time minus a 300s margin so the token never expires mid-request.
         if self._cached_token and time.monotonic() < self._token_expires_at:
             return self._cached_token
         async with self._token_lock:
@@ -615,6 +642,10 @@ class DingTalkChannel(Channel):
         m = inbound.metadata
         return f"{m.get('conversation_type', '')}:{m.get('sender_staff_id', '')}:{m.get('conversation_id', '')}:{m.get('message_id', '')}"
 
+    # [DL-INSIGHT] Inbound and outbound must hash to the SAME source_key so an agent reply finds the
+    # card its question opened. Inbound uses message_id; outbound falls back message_id → thread_ts,
+    # since the manager copies the original message_id into outbound metadata. A mismatch here = the
+    # reply can't find its card and posts a duplicate. This is the streaming correlation linchpin.
     def _make_card_source_key_from_outbound(self, msg: OutboundMessage) -> str:
         m = msg.metadata
         correlation_id = m.get("message_id") or msg.thread_ts or ""

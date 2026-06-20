@@ -43,6 +43,9 @@ _CHANNELS_GATEWAY_URL_ENV = "DEER_FLOW_CHANNELS_GATEWAY_URL"
 
 
 def _resolve_service_url(config: dict[str, Any], config_key: str, env_key: str, default: str) -> str:
+    # [DL-INSIGHT] config.pop (not get): strips langgraph_url/gateway_url/session out of the
+    # dict so start()'s "every remaining key is a channel name" loop never mistakes them for one.
+    # Precedence: explicit config value > env var > hardcoded default.
     value = config.pop(config_key, None)
     if isinstance(value, str) and value.strip():
         return value
@@ -87,7 +90,8 @@ class ChannelService:
 
             app_config = get_app_config()
         channels_config = {}
-        # extra fields are allowed by AppConfig (extra="allow")
+        # [DL-NOTE] `channels` is not a formal AppConfig schema field — it rides in via
+        # Pydantic extra="allow" and is read from model_extra, so it stays loosely typed.
         extra = app_config.model_extra or {}
         if "channels" in extra:
             channels_config = extra["channels"]
@@ -98,12 +102,16 @@ class ChannelService:
         if self._running:
             return
 
+        # [DL-NOTE] Startup order: manager (dispatch loop consuming the bus) comes up BEFORE any
+        # channel publishes inbound; stop() reverses it (channels first, then manager).
         await self.manager.start()
 
         for name, channel_config in self._config.items():
             if not isinstance(channel_config, dict):
                 continue
             if not channel_config.get("enabled", False):
+                # [DL-INSIGHT] UX safety net: detect creds present on a disabled channel and warn
+                # loudly — catches the common "I set tokens but forgot enabled: true" misconfig.
                 cred_keys = _CHANNEL_CREDENTIAL_KEYS.get(name, [])
                 has_creds = any(not isinstance(channel_config.get(k), bool) and channel_config.get(k) is not None and str(channel_config[k]).strip() for k in cred_keys)
                 if has_creds:
@@ -161,6 +169,9 @@ class ChannelService:
         try:
             from deerflow.reflection import resolve_class
 
+            # [DL-INSIGHT] Lazy import per channel: an optional SDK missing (e.g. slack_sdk) only
+            # fails that one channel here, not the whole service — other channels still start.
+            # [DL-QUESTION] base_class=None means no Channel-subclass enforcement on the resolved class.
             channel_cls = resolve_class(import_path, base_class=None)
         except Exception:
             logger.exception("Failed to import channel class for %s", name)
@@ -169,9 +180,13 @@ class ChannelService:
         try:
             config = dict(config)
             config["channel_store"] = self.store
+            # [DL-NOTE] store injected via config dict (not constructor arg) so every adapter
+            # shares the one ChannelStore; all channels also share the single self.bus.
             channel = channel_cls(bus=self.bus, config=config)
             self._channels[name] = channel
             await channel.start()
+            # [DL-INSIGHT] Post-start liveness gate: a channel that returns from start() but isn't
+            # actually running is rolled back out of _channels — registry only holds live channels.
             if not channel.is_running:
                 self._channels.pop(name, None)
                 logger.error("Channel %s did not enter a running state after start()", name)
@@ -217,6 +232,8 @@ def get_channel_service() -> ChannelService | None:
 async def start_channel_service(app_config: AppConfig | None = None) -> ChannelService:
     """Create and start the global ChannelService from app config."""
     global _channel_service
+    # [DL-NOTE] Module-global singleton, idempotent: Gateway lifespan calls this once at
+    # startup (app.py:196); the channels router reads the same instance via get_channel_service().
     if _channel_service is not None:
         return _channel_service
     _channel_service = ChannelService.from_app_config(app_config)

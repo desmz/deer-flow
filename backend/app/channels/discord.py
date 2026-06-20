@@ -41,6 +41,8 @@ class DiscordChannel(Channel):
             except (TypeError, ValueError):
                 continue
         self._mention_only: bool = bool(config.get("mention_only", False))
+        # [DL-NOTE] thread_mode defaults to mention_only: @-gated bots naturally want per-mention
+        # threads, but you can decouple them (e.g. always-thread without requiring a mention).
         self._thread_mode: bool = config.get("thread_mode", self._mention_only)
         self._allowed_channels: set[str] = set()
         for channel_id in config.get("allowed_channels", []):
@@ -55,6 +57,9 @@ class DiscordChannel(Channel):
         # Lock protecting _active_threads and the JSON file from concurrent access.
         # _run_client (Discord loop thread) and the main thread both read/write.
         self._thread_store_lock = threading.Lock()
+        # [DL-INSIGHT] channel_id→Discord-thread_id mapping lives in its OWN JSON, separate from
+        # ChannelStore (which maps IM conversations→DeerFlow thread_ids). Two different identity
+        # spaces: the Discord-native thread vs the agent's logical thread. See: store.py.
         store = config.get("channel_store")
         if store is not None:
             self._thread_store_path = store._path.parent / "discord_threads.json"
@@ -74,6 +79,8 @@ class DiscordChannel(Channel):
         if self._running:
             return
 
+        # [DL-INSIGHT] discord.py is an optional dependency: imported lazily inside start() so the
+        # whole app boots even when it's absent — a missing token/lib just no-ops this channel.
         try:
             import discord
         except ImportError:
@@ -89,12 +96,16 @@ class DiscordChannel(Channel):
         intents.guilds = True
         intents.message_content = True
 
+        # [DL-INSIGHT] AllowedMentions.none() makes the bot's own replies inert — agent output
+        # containing "@everyone" or user mentions never actually pings anyone (anti-abuse).
         client = discord.Client(
             intents=intents,
             allowed_mentions=discord.AllowedMentions.none(),
         )
         self._client = client
         self._discord_module = discord
+        # [DL-NOTE] Capture the bus event loop here (we're on it). Dual-loop pattern shared with
+        # telegram.py: discord client runs on its own loop in a thread, inbound bridges back here.
         self._main_loop = asyncio.get_event_loop()
 
         @client.event
@@ -104,6 +115,8 @@ class DiscordChannel(Channel):
         self._running = True
         self.bus.subscribe_outbound(self._on_outbound)
 
+        # [DL-INSIGHT] discord.py owns its event loop, so it can't share the bus loop. Run it in a
+        # daemon thread with its own loop (_run_client); the two loops talk via run_coroutine_threadsafe.
         self._thread = threading.Thread(target=self._run_client, daemon=True)
         self._thread.start()
         self._load_active_threads()
@@ -156,6 +169,8 @@ class DiscordChannel(Channel):
             logger.debug("[Discord] cancelled typing task for target %s", target_id)
         self._typing_tasks.clear()
 
+        # [DL-NOTE] We're on the bus loop but client.close() must run on the discord loop —
+        # hand it across with run_coroutine_threadsafe and await the wrapped future (10s cap).
         if self._client and self._discord_loop and self._discord_loop.is_running():
             close_future = asyncio.run_coroutine_threadsafe(self._client.close(), self._discord_loop)
             try:
@@ -201,6 +216,8 @@ class DiscordChannel(Channel):
         if self._discord_module is None:
             return False
 
+        # [DL-WARN] fp is opened but never explicitly closed: discord.File is expected to own and
+        # close the handle once sent, but on the send_future failing the fd leaks until GC.
         try:
             fp = open(str(attachment.actual_path), "rb")  # noqa: SIM115
             file = self._discord_module.File(fp, filename=attachment.filename)
@@ -214,6 +231,8 @@ class DiscordChannel(Channel):
 
     async def _start_typing(self, channel, chat_id: str, thread_ts: str | None = None) -> None:
         """Starts a loop to send periodic typing indicators."""
+        # [DL-NOTE] Typing is keyed by thread first, channel second — matches send()/_stop_typing()
+        # so the indicator is started and stopped against the same conversation target.
         target_id = thread_ts or chat_id
         if target_id in self._typing_tasks:
             return  # Already typing for this target
@@ -251,6 +270,8 @@ class DiscordChannel(Channel):
         if not self._running or not self._client:
             return
 
+        # [DL-NOTE] Two guards against loops/noise: ignore all bots, and ignore our own user id
+        # (belt-and-suspenders since our own messages are also bot messages).
         if message.author.bot:
             return
 
@@ -279,6 +300,8 @@ class DiscordChannel(Channel):
             bot_mention = None
             alt_mention = None
             standard_mention = ""
+        # [DL-NOTE] Three mention encodings checked: <@ID>, <@!ID> (nickname-ping), and the
+        # raw <@ID> — Discord clients emit different forms, so all must be matched and stripped.
         has_mention = (bot_mention and bot_mention in message.content) or (alt_mention and alt_mention in message.content) or (standard_mention and standard_mention in message.content)
 
         # Strip mention from text for processing
@@ -291,6 +314,9 @@ class DiscordChannel(Channel):
         chat_id = None
         typing_target = None  # The Discord object to type into
 
+        # [DL-INSIGHT] Discord routing rides on NATIVE Thread objects (unlike telegram, which
+        # emulates threading via reply_to_message_id). topic_id = the Discord thread id, chat_id =
+        # the parent channel id, so the bus maps each Discord thread to its own DeerFlow thread.
         if isinstance(message.channel, self._discord_module.Thread):
             # --- Message already inside a thread ---
             thread_obj = message.channel
@@ -298,7 +324,8 @@ class DiscordChannel(Channel):
             chat_id = str(thread_obj.parent_id or thread_obj.id)
             typing_target = thread_obj
 
-            # If this is a known active thread, process normally
+            # [DL-NOTE] O(1) membership test via the reverse-lookup set, avoiding a scan of
+            # _active_threads.values() on every inbound message.
             if thread_id in self._active_thread_ids:
                 msg_type = InboundMessageType.COMMAND if text.startswith("/") else InboundMessageType.CHAT
                 inbound = self._make_inbound(
@@ -321,7 +348,9 @@ class DiscordChannel(Channel):
                 asyncio.create_task(self._add_reaction(message))
                 return
 
-            # Thread not tracked (orphaned) — create new thread and handle below
+            # [DL-WARN] Orphaned thread (e.g. mapping lost across restart, or a thread we didn't
+            # create): reset routing vars and fall through to the channel-level logic below, which
+            # will spin up a fresh tracked thread rather than replying into the untracked one.
             logger.debug("[Discord] message in orphaned thread %s, will create new thread", thread_id)
             thread_id = None
             typing_target = None
@@ -341,7 +370,9 @@ class DiscordChannel(Channel):
             if self._mention_only and not has_mention and channel_id not in self._allowed_channels:
                 logger.debug("[Discord] skipping no-@ message in channel %s (not in thread)", channel_id)
                 return
-            # mention_only + fresh @ → create new thread instead of routing to existing one
+            # [DL-INSIGHT] A fresh @-mention in a channel that already has an active thread starts a
+            # NEW thread (and replaces the mapping) rather than continuing the old one — a mention
+            # is treated as "start a new conversation", reserving the old thread for its own replies.
             if self._mention_only and has_mention:
                 thread_obj = await self._create_thread(message)
                 if thread_obj is not None:
@@ -431,11 +462,17 @@ class DiscordChannel(Channel):
 
     def _publish(self, inbound) -> None:
         """Publish an inbound message to the main event loop."""
+        # [DL-INSIGHT] The cross-loop hand-off: on_message runs on the discord loop, but the bus
+        # queue lives on _main_loop. run_coroutine_threadsafe is the only thread-safe bridge.
+        # [DL-WARN] Fire-and-forget — the future is never awaited; failures surface only via the
+        # done_callback log, so a wedged bus would silently drop inbound messages.
         if self._main_loop and self._main_loop.is_running():
             future = asyncio.run_coroutine_threadsafe(self.bus.publish_inbound(inbound), self._main_loop)
             future.add_done_callback(lambda f: logger.exception("[Discord] publish_inbound failed", exc_info=f.exception()) if f.exception() else None)
 
     def _run_client(self) -> None:
+        # [DL-INSIGHT] Thread entrypoint: create a brand-new loop for THIS thread and block on
+        # client.start(). This is the discord loop that send()/stop() target via threadsafe calls.
         self._discord_loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._discord_loop)
         try:
@@ -470,6 +507,9 @@ class DiscordChannel(Channel):
 
             thread_name = f"deerflow-{message.author.display_name}-{message.id}"[:100]
             return await message.create_thread(name=thread_name)
+        # [DL-NOTE] Discord error 50024 = "cannot execute action on this channel type" (threads
+        # disabled / unsupported context). Logged at info, not exception — it's an expected fallback
+        # path, after which the caller replies in the channel directly instead of a thread.
         except self._discord_module.errors.HTTPException as exc:
             if exc.code == 50024:
                 logger.info(
@@ -492,6 +532,8 @@ class DiscordChannel(Channel):
         if not self._client or not self._discord_loop:
             return None
 
+        # [DL-NOTE] Prefer thread_ts (the Discord thread) over chat_id (parent channel) so replies
+        # land back in the conversation thread; chat_id is the fallback when no thread exists.
         target_ids: list[str] = []
         if msg.thread_ts:
             target_ids.append(msg.thread_ts)
@@ -524,6 +566,8 @@ class DiscordChannel(Channel):
         if not self._client:
             return None
 
+        # [DL-NOTE] Cache-first: get_channel() hits the local cache (sync, free); fall back to
+        # fetch_channel() (an API round-trip) only when the channel/thread isn't cached.
         channel = self._client.get_channel(target_id)
         if channel is not None:
             return channel
@@ -538,6 +582,8 @@ class DiscordChannel(Channel):
         if not text:
             return [""]
 
+        # [DL-NOTE] Discord caps messages at 2000 chars. Split on the last newline before the cap
+        # to keep paragraphs intact; only hard-cut at 2000 when there's no newline to break on.
         chunks: list[str] = []
         remaining = text
         while len(remaining) > _DISCORD_MAX_MESSAGE_LEN:

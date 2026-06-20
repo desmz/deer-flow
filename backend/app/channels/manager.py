@@ -49,6 +49,8 @@ CHANNEL_CAPABILITIES = {
 
 InboundFileReader = Callable[[dict[str, Any], httpx.AsyncClient], Awaitable[bytes | None]]
 
+# [DL-NOTE] Inbound carries the raw platform payload in metadata; these are stripped before
+# the metadata rides back out on OutboundMessage so the bus isn't bloated with whole events.
 _METADATA_DROP_KEYS = frozenset({"raw_message", "ref_msg"})
 
 
@@ -57,6 +59,8 @@ def _slim_metadata(meta: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in meta.items() if k not in _METADATA_DROP_KEYS}
 
 
+# [DL-INSIGHT] Per-channel pluggable inbound file reader. Default = HTTP GET; WeCom adds AES
+# decrypt, WeChat reads a local path. Lets _ingest_inbound_files stay channel-agnostic.
 INBOUND_FILE_READERS: dict[str, InboundFileReader] = {}
 
 
@@ -173,6 +177,8 @@ def _extract_response_text(result: dict | list) -> str:
 
     # Walk backwards to find usable response text, but stop at the last
     # human message to avoid returning text from a previous turn.
+    # [DL-INSIGHT] Backward walk + stop-at-human is the core "what did the agent just say"
+    # extraction: returns clarification-tool text on interrupts, strips [LOOP DETECTED] noise.
     for msg in reversed(messages):
         if not isinstance(msg, dict):
             continue
@@ -241,6 +247,8 @@ def _extract_text_content(content: Any) -> str:
     return ""
 
 
+# [DL-INSIGHT] Channel-agnostic stream merge: copes with BOTH delta chunks (append) and
+# cumulative snapshots (replace) by inspecting prefix/suffix overlap — no per-channel branching.
 def _merge_stream_text(existing: str, chunk: str) -> str:
     """Merge either delta text or cumulative text into a single snapshot."""
     if not chunk:
@@ -315,6 +323,8 @@ def _extract_artifacts(result: dict | list) -> list[str]:
     the last human message and collects file paths from ``present_files`` tool
     calls.  This ensures only newly-produced artifacts are returned.
     """
+    # [DL-INSIGHT] Sources artifacts from this turn's present_files tool CALLS, not the
+    # cumulative ThreadState.artifacts — otherwise every reply would re-attach old files.
     if isinstance(result, list):
         messages = result
     elif isinstance(result, dict):
@@ -370,6 +380,9 @@ def _resolve_attachments(thread_id: str, artifacts: list[str]) -> list[ResolvedA
     user_id = get_effective_user_id()
     outputs_dir = paths.sandbox_outputs_dir(thread_id, user_id=user_id).resolve()
     for virtual_path in artifacts:
+        # [DL-WARN] Defense-in-depth exfiltration guard: prefix check AND post-resolve
+        # relative_to(outputs_dir) — a present_files call must not leak uploads/workspace/etc.
+        # over an IM channel via a crafted or traversal path.
         # Security: only allow files from the agent outputs directory
         if not virtual_path.startswith(_OUTPUTS_VIRTUAL_PREFIX):
             logger.warning("[Manager] rejected non-outputs artifact path: %s", virtual_path)
@@ -583,6 +596,8 @@ class ChannelManager:
                 return channel.supports_streaming
         return CHANNEL_CAPABILITIES.get(channel_name, {}).get("supports_streaming", False)
 
+    # [DL-INSIGHT] Three-tier session config: default_session < per-channel < per-user, merged
+    # left-to-right in _resolve_run_params so a single user can override assistant/config/context.
     def _resolve_session_layer(self, msg: InboundMessage) -> tuple[dict[str, Any], dict[str, Any]]:
         channel_layer = _as_dict(self._channel_sessions.get(msg.channel_name))
         users_layer = _as_dict(channel_layer.get("users"))
@@ -609,6 +624,8 @@ class ChannelManager:
         else:
             configurable = {}
         run_config["configurable"] = configurable
+        # [DL-INSIGHT] checkpoint_ns="" pins channel runs to the root namespace so the next
+        # inbound on the same thread_id resumes from the same checkpoint (multi-turn continuity).
         # Pin channel-triggered runs to the root graph namespace so follow-up
         # turns continue from the same conversation checkpoint.
         configurable["checkpoint_ns"] = ""
@@ -622,6 +639,8 @@ class ChannelManager:
             {"thread_id": thread_id},
         )
 
+        # [DL-NOTE] There is only one real LangGraph assistant (lead_agent); "custom agents" are
+        # just lead_agent + agent_name in run_context. A non-default assistant_id is rewritten here.
         # Custom agents are implemented as lead_agent + agent_name context.
         # Keep backward compatibility for channel configs that set
         # assistant_id: <custom-agent-name> by routing through lead_agent.
@@ -638,6 +657,9 @@ class ChannelManager:
         if self._client is None:
             from langgraph_sdk import get_client
 
+            # [DL-INSIGHT] Channels talk to Gateway over the SAME HTTP SDK as the browser, but
+            # auth differently: internal-auth headers (service-to-service) + a self-issued CSRF
+            # token sent as matching cookie+header pair so CSRFMiddleware passes without a session.
             self._client = get_client(
                 url=self._langgraph_url,
                 headers={
@@ -690,6 +712,8 @@ class ChannelManager:
                 msg.msg_type.value,
                 msg.text[:100] if msg.text else "",
             )
+            # [DL-INSIGHT] Fire-and-forget: each message handled in its own task so the loop keeps
+            # draining the queue. Concurrency is bounded by self._semaphore inside _handle_message.
             task = asyncio.create_task(self._handle_message(msg))
             task.add_done_callback(self._log_task_error)
 
@@ -747,6 +771,8 @@ class ChannelManager:
         # Look up existing DeerFlow thread.
         # topic_id may be None (e.g. Telegram private chats) — the store
         # handles this by using the "channel:chat_id" key without a topic suffix.
+        # [DL-NOTE] Thread reuse is the (channel, chat, topic)→thread_id mapping in ChannelStore;
+        # a hit continues the conversation, a miss creates a fresh Gateway thread below.
         thread_id = self.store.get_thread_id(msg.channel_name, msg.chat_id, topic_id=msg.topic_id)
         if thread_id:
             logger.info("[Manager] reusing thread: thread_id=%s for topic_id=%s", thread_id, msg.topic_id)
@@ -786,6 +812,9 @@ class ChannelManager:
             )
             return
 
+        # [DL-INSIGHT] Non-streaming path: runs.wait blocks for the whole run, then we extract one
+        # final reply. multitask_strategy="reject" enforces one run per thread → ConflictError on
+        # a concurrent message, surfaced to the user as the friendly THREAD_BUSY_MESSAGE.
         logger.info("[Manager] invoking runs.wait(thread_id=%s, text=%r)", thread_id, msg.text[:100])
         try:
             result = await client.runs.wait(
@@ -880,6 +909,8 @@ class ChannelManager:
                 if not latest_text or latest_text == last_published_text:
                     continue
 
+                # [DL-INSIGHT] Throttle outbound stream updates to ~3/sec (0.35s) and skip when text
+                # is unchanged — IM card-patch APIs (Feishu/WeCom) rate-limit, so we coalesce deltas.
                 now = time.monotonic()
                 if last_published_text and now - last_publish_at < STREAM_UPDATE_MIN_INTERVAL_SECONDS:
                     continue
@@ -904,6 +935,8 @@ class ChannelManager:
             else:
                 logger.exception("[Manager] streaming error: thread_id=%s", thread_id)
         finally:
+            # [DL-INSIGHT] finally always emits exactly one is_final=True message — success, error,
+            # or busy. Channels rely on this terminal frame to stop the typing/streaming card.
             result = last_values if last_values is not None else {"messages": [{"type": "ai", "content": latest_text}]}
             response_text = _extract_response_text(result)
             artifacts = _extract_artifacts(result)
@@ -948,6 +981,8 @@ class ChannelManager:
         parts = text.split(maxsplit=1)
         command = parts[0].lower().lstrip("/")
 
+        # [DL-NOTE] /bootstrap is the one command that reuses the chat path: it rewrites the
+        # message to CHAT and injects is_bootstrap=True context, which binds the setup_agent tool.
         if command == "bootstrap":
             from dataclasses import replace as _dc_replace
 

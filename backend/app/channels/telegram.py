@@ -25,14 +25,20 @@ class TelegramChannel(Channel):
         super().__init__(name="telegram", bus=bus, config=config)
         self._application = None
         self._thread: threading.Thread | None = None
+        # [DL-INSIGHT] TWO event loops, unlike Slack's one. _tg_loop runs python-telegram-bot
+        # in a dedicated thread; _main_loop is the bus loop. Inbound bridges tg_loop→main_loop;
+        # outbound bridges main_loop→tg_loop. See: app/channels/slack.py (single-loop variant).
         self._tg_loop: asyncio.AbstractEventLoop | None = None
         self._main_loop: asyncio.AbstractEventLoop | None = None
         self._allowed_users: set[int] = set()
         for uid in config.get("allowed_users", []):
             try:
+                # [DL-NOTE] Telegram user IDs are ints (vs Slack's string IDs); coerce + drop bad values.
                 self._allowed_users.add(int(uid))
             except (ValueError, TypeError):
                 pass
+        # [DL-INSIGHT] Telegram has no native thread_ts. Threading is emulated by replying to the
+        # bot's *last* message per chat (reply_to_message_id), tracked here. See send().
         # chat_id -> last sent message_id for threaded replies
         self._last_bot_message: dict[str, int] = {}
 
@@ -51,6 +57,8 @@ class TelegramChannel(Channel):
             logger.error("Telegram channel requires bot_token")
             return
 
+        # [DL-INSIGHT] Capture the bus loop here (on the bus thread) so the tg thread can later
+        # bridge inbound messages back into it via run_coroutine_threadsafe (see _on_text).
         self._main_loop = asyncio.get_event_loop()
         self._running = True
         self.bus.subscribe_outbound(self._on_outbound)
@@ -71,6 +79,8 @@ class TelegramChannel(Channel):
 
         self._application = app
 
+        # [DL-NOTE] Own thread + own loop (vs Slack's run_in_executor on the SDK's blocking
+        # connect). Needed because PTB runs its own asyncio loop that must not be the bus loop.
         # Run polling in a dedicated thread with its own event loop
         self._thread = threading.Thread(target=self._run_polling, daemon=True)
         self._thread.start()
@@ -79,9 +89,12 @@ class TelegramChannel(Channel):
     async def stop(self) -> None:
         self._running = False
         self.bus.unsubscribe_outbound(self._on_outbound)
+        # [DL-INSIGHT] Cross-thread stop: we're on the bus loop, but tg_loop runs on another
+        # thread. call_soon_threadsafe is the only safe way to ask it to stop run_forever().
         if self._tg_loop and self._tg_loop.is_running():
             self._tg_loop.call_soon_threadsafe(self._tg_loop.stop)
         if self._thread:
+            # [DL-NOTE] join with timeout so a hung polling thread can't block shutdown forever.
             self._thread.join(timeout=10)
             self._thread = None
         self._application = None
@@ -99,6 +112,8 @@ class TelegramChannel(Channel):
 
         kwargs: dict[str, Any] = {"chat_id": chat_id, "text": msg.text}
 
+        # [DL-INSIGHT] Emulated threading: chain each reply to the bot's previous message in this
+        # chat. Telegram has no thread_ts, so this keeps replies visually grouped. See __init__.
         # Reply to the last bot message in this chat for threading
         reply_to = self._last_bot_message.get(msg.chat_id)
         if reply_to:
@@ -139,6 +154,7 @@ class TelegramChannel(Channel):
             logger.error("[Telegram] Invalid chat_id: %s", msg.chat_id)
             return False
 
+        # [DL-WARN] Hard platform limits enforced client-side to fail fast: 10MB photos / 50MB docs.
         # Telegram limits: 10MB for photos, 50MB for documents
         if attachment.size > 50 * 1024 * 1024:
             logger.warning("[Telegram] file too large (%d bytes), skipping: %s", attachment.size, attachment.filename)
@@ -148,6 +164,8 @@ class TelegramChannel(Channel):
         reply_to = self._last_bot_message.get(msg.chat_id)
 
         try:
+            # [DL-NOTE] Images under 10MB go as send_photo (inline preview); everything else as
+            # send_document (no preview, but preserves the original file/filename).
             if attachment.is_image and attachment.size <= 10 * 1024 * 1024:
                 with open(attachment.actual_path, "rb") as f:
                     kwargs: dict[str, Any] = {"chat_id": chat_id, "photo": f}
@@ -189,6 +207,8 @@ class TelegramChannel(Channel):
             logger.exception("[Telegram] failed to send running reply in chat=%s", chat_id)
 
     # -- internal ----------------------------------------------------------
+    # [DL-INSIGHT] run_coroutine_threadsafe returns a future whose exception is silently dropped
+    # unless inspected. This done-callback surfaces cross-loop failures that would otherwise vanish.
     @staticmethod
     def _log_future_error(fut, name: str, msg_id: str):
         try:
@@ -200,9 +220,13 @@ class TelegramChannel(Channel):
 
     def _run_polling(self) -> None:
         """Run telegram polling in a dedicated thread."""
+        # [DL-INSIGHT] Create + install a fresh loop for THIS thread. PTB schedules all its work
+        # here; set_event_loop makes get_event_loop() inside PTB resolve to this one, not the bus loop.
         self._tg_loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._tg_loop)
         try:
+            # [DL-WARN] run_polling() calls loop.add_signal_handler(), which raises outside the main
+            # thread. The manual initialize→start→start_polling→run_forever sequence sidesteps that.
             # Cannot use run_polling() because it calls add_signal_handler(),
             # which only works in the main thread.  Instead, manually
             # initialize the application and start the updater.
@@ -234,6 +258,8 @@ class TelegramChannel(Channel):
             return
         await update.message.reply_text("Welcome to DeerFlow! Send me a message to start a conversation.\nType /help for available commands.")
 
+    # [DL-INSIGHT] Ack-then-enqueue ordering: send the "Working on it..." reply BEFORE publishing
+    # to the bus, so the user sees acknowledgement even if the run is slow. Runs on the bus loop.
     async def _process_incoming_with_reply(self, chat_id: str, msg_id: int, inbound: InboundMessage) -> None:
         await self._send_running_reply(chat_id, msg_id)
         await self.bus.publish_inbound(inbound)
@@ -287,6 +313,9 @@ class TelegramChannel(Channel):
         user_id = str(update.effective_user.id)
         msg_id = str(update.message.message_id)
 
+        # [DL-INSIGHT] topic_id is DeerFlow's conversation-continuity key (vs Slack's thread_ts).
+        # Private chat → None → store key "channel:chat_id" → one persistent thread per user.
+        # Group chat → reply-to id (continue topic) or own msg id (start topic) → separate threads.
         # topic_id determines which DeerFlow thread the message maps to.
         # In private chats, use None so that all messages share a single
         # thread (the store key becomes "channel:chat_id").
@@ -310,6 +339,8 @@ class TelegramChannel(Channel):
         )
         inbound.topic_id = topic_id
 
+        # [DL-INSIGHT] The tg_loop→main_loop bridge: this handler runs on the PTB thread, but the
+        # bus queue lives on the main loop. run_coroutine_threadsafe is the safe cross-loop hand-off.
         if self._main_loop and self._main_loop.is_running():
             fut = asyncio.run_coroutine_threadsafe(self._process_incoming_with_reply(chat_id, update.message.message_id, inbound), self._main_loop)
             fut.add_done_callback(lambda f: self._log_future_error(f, "process_incoming_with_reply", update.message.message_id))

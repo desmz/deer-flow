@@ -63,6 +63,9 @@ class FeishuChannel(Channel):
         self._GetMessageResourceRequest = None
         self._thread_lock = threading.Lock()
 
+    # [DL-INSIGHT] Always streaming (unlike DingTalk's config-gated flag): Feishu interactive cards
+    # natively render markdown and support in-place patching, so the manager always uses runs.stream()
+    # and this adapter patches one card per turn. See: _send_card_message, _build_card_content.
     @property
     def supports_streaming(self) -> bool:
         return True
@@ -155,6 +158,10 @@ class FeishuChannel(Channel):
             import lark_oapi as lark
             import lark_oapi.ws.client as _ws_client_mod
 
+            # [DL-WARN] Monkey-patching SDK internals: lark-oapi caches a module-level loop at import
+            # (the main thread's uvloop, already running) and later calls run_until_complete() on it →
+            # RuntimeError. Overwriting _ws_client_mod.loop with this thread's fresh loop is the
+            # workaround. Brittle: a lark-oapi refactor of where it reads `loop` would silently break.
             # Replace the SDK's module-level loop so Client.start() uses
             # this thread's (non-running) event loop instead of the main
             # thread's uvloop.
@@ -287,6 +294,10 @@ class FeishuChannel(Channel):
             raise RuntimeError(f"Feishu file upload failed: code={response.code}, msg={response.msg}")
         return response.data.file_key
 
+    # [DL-INSIGHT] The ONLY channel that overrides receive_file (base default is a no-op). Inbound
+    # _on_message inserts placeholders ([image]/[file]) into the text; here the actual bytes are
+    # downloaded into the thread's sandbox uploads dir and the placeholders are rewritten to virtual
+    # paths the agent can read. So the model sees "/mnt/user-data/uploads/x.png", not "[image]".
     async def receive_file(self, msg: InboundMessage, thread_id: str) -> InboundMessage:
         """Download a Feishu file into the thread uploads directory.
 
@@ -403,6 +414,9 @@ class FeishuChannel(Channel):
         Feishu's interactive card format natively renders markdown, including
         headers, bold/italic, code blocks, lists, and links.
         """
+        # [DL-NOTE] config.update_multi=True is REQUIRED for Feishu's patch API: it marks the card as
+        # multi-update-capable so subsequent message.patch() calls replace its content in place.
+        # Without it, streaming updates to the same card are rejected.
         card = {
             "config": {"wide_screen_mode": True, "update_multi": True},
             "elements": [{"tag": "markdown", "content": text}],
@@ -451,6 +465,9 @@ class FeishuChannel(Channel):
         request = self._PatchMessageRequest.builder().message_id(message_id).request_body(self._PatchMessageRequestBody.builder().content(content).build()).build()
         await asyncio.to_thread(self._api_client.im.v1.message.patch, request)
 
+    # [DL-INSIGHT] asyncio only holds WEAK refs to tasks — a fire-and-forget create_task() can be
+    # garbage-collected mid-flight. Stashing it in _background_tasks (and discarding in the done
+    # callback) keeps it alive until completion. A common, easy-to-miss asyncio footgun.
     def _track_background_task(self, task: asyncio.Task, *, name: str, msg_id: str) -> None:
         """Keep a strong reference to fire-and-forget tasks and surface errors."""
         self._background_tasks.add(task)
@@ -508,6 +525,10 @@ class FeishuChannel(Channel):
         except Exception:
             logger.exception("[Feishu] failed to send running reply for message %s", message_id)
 
+    # [DL-INSIGHT] The is_final patch flow. A running card was created on inbound (_prepare_inbound).
+    # Each outbound here patches THAT card in place via _update_card. Races are handled: if the card
+    # isn't created yet, await its in-flight task; if it failed, fall back to a fresh reply on the
+    # final chunk. On is_final: drop the tracking entry and stamp a DONE reaction on the source msg.
     async def _send_card_message(self, msg: OutboundMessage) -> None:
         """Send or update the Feishu card tied to the current request."""
         source_message_id = msg.thread_ts
@@ -575,6 +596,9 @@ class FeishuChannel(Channel):
         except Exception:
             pass
 
+    # [DL-INSIGHT] Unlike DingTalk (which awaits card creation BEFORE publish), Feishu fires the
+    # running card non-blockingly and publishes immediately. send() later awaits the in-flight task
+    # if needed (_send_card_message). Trade-off: lower inbound latency, more race handling downstream.
     async def _prepare_inbound(self, msg_id: str, inbound) -> None:
         """Kick off Feishu side effects without delaying inbound dispatch."""
         reaction_task = asyncio.create_task(self._add_reaction(msg_id, "OK"))
@@ -673,6 +697,9 @@ class FeishuChannel(Channel):
             else:
                 msg_type = InboundMessageType.CHAT
 
+            # [DL-NOTE] Feishu has native threads: root_id is set on a reply within a thread. Reuse it
+            # as topic_id so all thread replies map to one DeerFlow thread; a fresh message uses its
+            # own msg_id (new topic). thread_ts always = msg_id (the card is replied to THIS message).
             # topic_id: use root_id for replies (same topic), msg_id for new messages (new topic)
             topic_id = root_id or msg_id
 

@@ -79,6 +79,10 @@ def _validate_aes_128_key(key: bytes) -> None:
         raise ValueError("AES-128-ECB requires a 16-byte key")
 
 
+# [DL-INSIGHT] WeChat media is end-to-end encrypted and there's no SDK to hide it: DeerFlow
+# implements the AES-128-ECB + PKCS7 crypto itself. Outbound = encrypt with a random per-file key,
+# upload ciphertext to CDN, send the key in the message item; inbound = download + decrypt. This is
+# why this adapter is by far the largest — half of it is hand-rolled media crypto + CDN plumbing.
 def _encrypt_aes_128_ecb(content: bytes, key: bytes) -> bytes:
     _validate_aes_128_key(key)
     padder = padding.PKCS7(128).padder()
@@ -126,6 +130,10 @@ def _detect_image_extension_and_mime(content: bytes) -> tuple[str, str] | None:
     return None
 
 
+# [DL-INSIGHT] No vendor SDK: this adapter speaks the iLink HTTP API directly via httpx. Like WeCom
+# (and unlike discord/telegram/feishu/dingtalk), it's natively async — the poll loop is a Task on the
+# bus loop, so NO second thread or run_coroutine_threadsafe bridge is needed. supports_streaming is
+# left at the base default (False) → one-shot runs.wait(), despite being the biggest adapter.
 class WechatChannel(Channel):
     """WeChat iLink bot channel using long-polling.
 
@@ -269,6 +277,8 @@ class WechatChannel(Channel):
         await self._ensure_client()
         self._running = True
         self.bus.subscribe_outbound(self._on_outbound)
+        # [DL-NOTE] The long-poll runs as a Task on the bus loop (not a thread). _handle_update can
+        # therefore `await self.bus.publish_inbound` directly — no cross-loop hand-off.
         self._poll_task = self._main_loop.create_task(self._poll_loop())
         logger.info("WeChat channel started")
 
@@ -299,6 +309,9 @@ class WechatChannel(Channel):
             logger.warning("[WeChat] unable to authenticate before sending chat=%s", msg.chat_id)
             return
 
+        # [DL-INSIGHT] context_token is WeChat's reply currency: every inbound carries one, and the
+        # bot can only reply by quoting it back. Stashed on inbound (_handle_update), resolved here.
+        # No token → the message can't be delivered, so it's dropped (vs other adapters that route by id).
         context_token = self._resolve_context_token(msg)
         if not context_token:
             logger.warning("[WeChat] missing context_token for chat=%s, dropping outbound message", msg.chat_id)
@@ -558,6 +571,10 @@ class WechatChannel(Channel):
                     timeout=max(self._current_longpoll_timeout_seconds() + 5.0, 10.0),
                 )
 
+                # [DL-NOTE] Long-poll cursor pattern: get_updates_buf is the resume token, persisted to
+                # disk so polling continues across restarts without re-delivering old messages.
+                # [DL-WARN] errcode -14 = bot_token expired → wipe token, stop the channel entirely.
+                # WeChat tokens aren't auto-refreshable here: the operator must re-scan the QR / update config.
                 ret = data.get("ret", 0)
                 if ret not in (0, None):
                     errcode = data.get("errcode")
@@ -630,9 +647,15 @@ class WechatChannel(Channel):
                 "raw_message": raw_message,
             },
         )
+        # [DL-INSIGHT] topic_id is hardwired None → one persistent DeerFlow thread per user (chat_id =
+        # user_id), same continuity model as WeCom. WeChat has no thread/topic concept to map onto.
         inbound.topic_id = None
         await self.bus.publish_inbound(inbound)
 
+    # [DL-INSIGHT] Two auth modes: a pre-provisioned bot_token, or first-run QR bootstrap (when
+    # qrcode_login_enabled). The QR flow logs a code, polls get_qrcode_status until "confirmed", then
+    # captures the bot_token and persists it to wechat-auth.json. The auth_lock serializes concurrent
+    # callers so only one QR bind runs. This is the only channel with an interactive login bootstrap.
     async def _ensure_authenticated(self) -> bool:
         async with self._auth_lock:
             if self._bot_token:
@@ -1148,6 +1171,10 @@ class WechatChannel(Channel):
                 continue
         return None
 
+    # [DL-WARN] Heavily defensive: the iLink API is inconsistent about where/how the AES key appears
+    # (field names aeskey/aes_key/aesKey/encrypt_key…, hex vs base64 vs urlsafe-base64, nested in media).
+    # This walks every payload + encoding combination. The robustness is a tell that the upstream
+    # API/SDK contract is unstable — see _decode_base64_aes_key / _parse_aes_key_candidate.
     @classmethod
     def _resolve_media_aes_key(cls, *payloads: Mapping[str, Any]) -> bytes | None:
         for payload in payloads:

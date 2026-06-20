@@ -35,6 +35,8 @@ class ChannelStore:
 
     def __init__(self, path: str | Path | None = None) -> None:
         if path is None:
+            # [DL-NOTE] Lazy import of harness config keeps app→harness coupling out of
+            # import time; default store lives at {base_dir}/channels/store.json.
             from deerflow.config.paths import get_paths
 
             path = Path(get_paths().base_dir) / "channels" / "store.json"
@@ -49,6 +51,8 @@ class ChannelStore:
         if self._path.exists():
             try:
                 return json.loads(self._path.read_text(encoding="utf-8"))
+            # [DL-WARN] A corrupt file silently resets ALL mappings — every IM conversation
+            # loses its thread binding and the next message starts a fresh thread.
             except (json.JSONDecodeError, OSError):
                 logger.warning("Corrupt channel store at %s, starting fresh", self._path)
         return {}
@@ -60,6 +64,8 @@ class ChannelStore:
             suffix=".tmp",
             delete=False,
         )
+        # [DL-INSIGHT] Atomic write: dump to a temp file in the same dir, then os.replace —
+        # a crash mid-write never leaves a half-written store. Same pattern as memory storage.
         try:
             json.dump(self._data, fd, indent=2)
             fd.close()
@@ -126,6 +132,8 @@ class ChannelStore:
                 return False
 
             # Remove all mappings for this channel/chat_id (base and any topic-specific keys).
+            # [DL-INSIGHT] Boundary-safe prefix match: `prefix + ":"` prevents chat "12"
+            # from matching chat "123"; the exact `k == prefix` catches the base (topic-less) key.
             prefix = self._key(channel_name, chat_id)
             keys_to_delete = [k for k in self._data if k == prefix or k.startswith(prefix + ":")]
             if not keys_to_delete:
@@ -138,6 +146,8 @@ class ChannelStore:
 
     def list_entries(self, channel_name: str | None = None) -> list[dict[str, Any]]:
         """List all stored mappings, optionally filtered by channel."""
+        # [DL-WARN] Reads (here and get_thread_id) don't take self._lock; only writes do.
+        # A concurrent set/remove could raise "dict changed size during iteration" here.
         results = []
         for key, entry in self._data.items():
             parts = key.split(":", 2)
