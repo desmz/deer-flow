@@ -37,6 +37,8 @@ CONVERTIBLE_EXTENSIONS = {
 # Files larger than this threshold are converted in a background thread.
 # Small files complete in < 1s synchronously; spawning a thread adds unnecessary
 # scheduling overhead for them.
+# [DL-INSIGHT] Conversion (pymupdf/markitdown) is sync CPU-bound work. Above 1 MB it's
+# offloaded via asyncio.to_thread so it can't stall the Gateway's async event loop (#1569).
 _ASYNC_THRESHOLD_BYTES = 1 * 1024 * 1024  # 1 MB
 
 # If pymupdf4llm produces fewer characters *per page* than this threshold,
@@ -54,10 +56,14 @@ def _pymupdf_output_too_sparse(text: str, file_path: Path) -> bool:
     documents (few pages, few chars) and long documents (many pages, many chars)
     are handled correctly.
     """
+    # [DL-INSIGHT] chars-per-page heuristic, not an absolute floor: a 1-page memo and a
+    # 300-page report both pass, while an image-based PDF (≈0 extractable text) fails.
     chars = len(text.strip())
     doc = None
     pages: int | None = None
     try:
+        # [DL-NOTE] Reopens the PDF with raw pymupdf just to count pages; doc.close() in
+        # finally avoids leaking the file handle even if len(doc) raises.
         import pymupdf
 
         doc = pymupdf.open(str(file_path))
@@ -82,6 +88,8 @@ def _convert_pdf_with_pymupdf4llm(file_path: Path) -> str | None:
     Returns the markdown text, or None if pymupdf4llm is not installed or
     if conversion fails (e.g. encrypted/corrupt PDF).
     """
+    # [DL-INSIGHT] pymupdf4llm is an optional dependency: missing → return None so the
+    # caller transparently falls back to MarkItDown (no hard requirement, no crash).
     try:
         import pymupdf4llm
     except ImportError:
@@ -117,6 +125,8 @@ def _do_convert(file_path: Path, pdf_converter: str) -> str:
 
         if pymupdf_text is not None:
             # pymupdf4llm is installed
+            # [DL-INSIGHT] Explicit "pymupdf4llm" trusts the user and skips the sparseness
+            # check; only "auto" second-guesses the output and may fall back to MarkItDown.
             if pdf_converter == "pymupdf4llm":
                 # Explicit — use as-is regardless of output length
                 return pymupdf_text
@@ -157,11 +167,15 @@ async def convert_file_to_markdown(file_path: Path) -> Path | None:
         else:
             text = _do_convert(file_path, pdf_converter)
 
+        # [DL-NOTE] Output is the sibling <stem>.md — the same path UploadsMiddleware and
+        # delete_file_safe reconstruct via with_suffix(".md"). Implicit naming contract.
         md_path = file_path.with_suffix(".md")
         md_path.write_text(text, encoding="utf-8")
 
         logger.info("Converted %s to markdown: %s (%d chars)", file_path.name, md_path.name, len(text))
         return md_path
+    # [DL-INSIGHT] Conversion is best-effort: any failure returns None, never raises.
+    # Upload of the original file must succeed even if the .md companion can't be built.
     except Exception as e:
         logger.error("Failed to convert %s to markdown: %s", file_path.name, e)
         return None
@@ -195,6 +209,8 @@ _BOLD_HEADING_RE = re.compile(r"^\*\*((ITEM|PART|SECTION|SCHEDULE|EXHIBIT|APPEND
 #      **1** **概述** or accented words (negative lookahead instead of [A-Za-z])
 #   4. At most two additional blocks (four total) with [^*]+ (no * inside) to keep
 #      the regex linear and avoid ReDoS on attacker-controlled content
+# [DL-WARN] Document text is attacker-controlled (uploaded PDFs). [^*]+ and the bounded
+# {0,2} repetition keep matching linear-time — guards against catastrophic-backtracking DoS.
 _SPLIT_BOLD_HEADING_RE = re.compile(r"^\*\*[\dA-Z][\d\.]*\*\*\s+\*\*(?!\d[\d\s.,\-–—/:()%]*\*\*)[^*]+\*\*(?:\s+\*\*[^*]+\*\*){0,2}\s*$")
 
 # Maximum number of outline entries injected into the agent context.
@@ -279,9 +295,14 @@ def extract_outline(md_path: Path) -> list[dict]:
                     if title:
                         outline.append({"title": title, "line": lineno})
 
+                # [DL-NOTE] Appends a {"truncated": True} sentinel as the LAST element so
+                # callers can show "first N headings" without re-reading the file. Callers
+                # must filter on .get("truncated") — it has no "title"/"line" keys.
                 if len(outline) >= MAX_OUTLINE_ENTRIES:
                     outline.append({"truncated": True})
                     break
+    # [DL-NOTE] Outline extraction is non-critical: any read/parse error yields [] so an
+    # upload is never failed by a heading-parsing problem.
     except Exception:
         return []
 
@@ -304,6 +325,8 @@ def _get_pdf_converter() -> str:
     so that values like 'AUTO' or 'MarkItDown' from config.yaml don't silently
     fall through to unexpected behaviour.
     """
+    # [DL-NOTE] Normalises + allowlist-validates so "AUTO"/"MarkItDown" from config.yaml
+    # don't silently disable PDF handling; unknown values warn and degrade to "auto".
     try:
         raw = str(_get_uploads_config_value("pdf_converter", "auto")).strip().lower()
         if raw not in _ALLOWED_PDF_CONVERTERS:

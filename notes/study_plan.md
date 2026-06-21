@@ -1053,12 +1053,51 @@ Phase 3 — Observability support:
 
 **Key files:**
 
-| Path                                           | Status | Notes                                                                                                       |
-| ---------------------------------------------- | ------ | ----------------------------------------------------------------------------------------------------------- |
-| `backend/packages/harness/deerflow/community/` | `[ ]`  | All community integrations: Tavily, Jina, Firecrawl, Serper, Exa, InfoQuest, DDG, image search, AIO sandbox |
-| `backend/tests/test_exa_tools.py`              | `[ ]`  | Exa neural search tool tests                                                                                |
-| `backend/tests/test_firecrawl_tools.py`        | `[ ]`  | Firecrawl web scraping tests                                                                                |
-| `backend/tests/test_serper_tools.py`           | `[ ]`  | Serper Google Search API tests                                                                              |
+| Path                                                                              | Status | Notes                                                                       |
+| --------------------------------------------------------------------------------- | ------ | --------------------------------------------------------------------------- |
+| `backend/packages/harness/deerflow/community/tavily/tools.py`                     | `[ ]`  | Tavily `web_search` tool; managed web-search client                         |
+| `backend/packages/harness/deerflow/community/ddg_search/tools.py`                 | `[ ]`  | DuckDuckGo `web_search` tool; keyless text search                           |
+| `backend/packages/harness/deerflow/community/serper/tools.py`                     | `[ ]`  | Serper `web_search` tool; Google Search JSON API                            |
+| `backend/packages/harness/deerflow/community/exa/tools.py`                        | `[ ]`  | Exa `web_search` tool; neural search client                                 |
+| `backend/packages/harness/deerflow/community/firecrawl/tools.py`                  | `[ ]`  | Firecrawl `web_search` tool; web scraping/crawl client                      |
+| `backend/packages/harness/deerflow/community/image_search/tools.py`               | `[ ]`  | DuckDuckGo-backed image search tool for image-generation reference          |
+| `backend/packages/harness/deerflow/community/jina_ai/jina_client.py`              | `[ ]`  | Jina Reader client; async crawl returning page content                      |
+| `backend/packages/harness/deerflow/community/jina_ai/tools.py`                    | `[ ]`  | Jina `web_fetch` tool; fetches and extracts page content via readability    |
+| `backend/packages/harness/deerflow/community/infoquest/infoquest_client.py`       | `[ ]`  | BytePlus InfoQuest search-and-fetch API client                              |
+| `backend/packages/harness/deerflow/community/infoquest/tools.py`                  | `[ ]`  | InfoQuest `web_search`/fetch tools; wraps the client + readability extractor |
+| `backend/packages/harness/deerflow/community/aio_sandbox/sandbox_info.py`         | `[x]`  | Data shapes describing sandbox metadata [already annotated §15]             |
+| `backend/packages/harness/deerflow/community/aio_sandbox/backend.py`              | `[x]`  | Abstract async backend interface [already annotated §15]                    |
+| `backend/packages/harness/deerflow/community/aio_sandbox/local_backend.py`        | `[x]`  | Local execution backend for the AIO sandbox [already annotated §15]         |
+| `backend/packages/harness/deerflow/community/aio_sandbox/remote_backend.py`       | `[x]`  | Remote/network execution backend [already annotated §15]                    |
+| `backend/packages/harness/deerflow/community/aio_sandbox/aio_sandbox.py`          | `[x]`  | Main async IO sandbox implementation [already annotated §15]                |
+| `backend/packages/harness/deerflow/community/aio_sandbox/aio_sandbox_provider.py` | `[x]`  | Provider/factory for the AIO sandbox [already annotated §15]                |
+
+**Study order:**
+
+Phase 1 — Single-file search adapters (one `tools.py` each; read first to learn the `@tool("web_search")` adapter shape, in ascending complexity):
+
+1. `community/tavily/tools.py` — Tavily; the simplest managed `web_search` client; read first to see the adapter pattern
+2. `community/ddg_search/tools.py` — DuckDuckGo; keyless text search, no API client dependency
+3. `community/serper/tools.py` — Serper; raw Google Search JSON API over HTTP
+4. `community/exa/tools.py` — Exa; neural search via the `Exa` SDK client
+5. `community/firecrawl/tools.py` — Firecrawl; web scraping/crawl via the `FirecrawlApp` client
+6. `community/image_search/tools.py` — DuckDuckGo-backed image search; a variant of the search adapter for image-generation reference
+
+Phase 2 — Client + tools pattern (a dedicated client wrapper plus its tool layer):
+
+7. `community/jina_ai/jina_client.py` — Jina Reader client; async `crawl()` returning page content; read before its tool
+8. `community/jina_ai/tools.py` — Jina `web_fetch` tool; wraps `JinaClient` + `ReadabilityExtractor`
+9. `community/infoquest/infoquest_client.py` — BytePlus InfoQuest search-and-fetch API client; read before its tool
+10. `community/infoquest/tools.py` — InfoQuest `web_search`/fetch tools; wraps the client + readability extractor
+
+Phase 3 — AIO sandbox (already annotated §15; re-read here as the remote/async sandbox alternative in this section's scope):
+
+11. `community/aio_sandbox/sandbox_info.py` — data shapes describing sandbox metadata
+12. `community/aio_sandbox/backend.py` — abstract async backend interface
+13. `community/aio_sandbox/local_backend.py` — local execution backend
+14. `community/aio_sandbox/remote_backend.py` — remote/network execution backend
+15. `community/aio_sandbox/aio_sandbox.py` — main async IO sandbox; implements the sandbox interface
+16. `community/aio_sandbox/aio_sandbox_provider.py` — provider/factory for the AIO sandbox
 
 ---
 

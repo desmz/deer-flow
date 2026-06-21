@@ -29,6 +29,10 @@ class Article:
         return markdown
 
     def to_message(self) -> list[dict]:
+        # [DL-INSIGHT] Builds an LLM multimodal message: split markdown on image syntax,
+        # interleaving {"type":"text"} and {"type":"image_url"} parts for vision models.
+        # [DL-WARN] Reads self.url, but __init__ never sets it (only a class annotation).
+        # Callers must assign article.url before calling to_message() or it AttributeErrors.
         image_pattern = r"!\[.*?\]\((.*?)\)"
 
         content: list[dict[str, str]] = []
@@ -37,6 +41,8 @@ class Article:
         if not markdown or not markdown.strip():
             return [{"type": "text", "text": "No content available"}]
 
+        # [DL-NOTE] Capturing group in the pattern makes re.split interleave: even indices
+        # are surrounding text, odd indices are the captured image URLs. Hence the i%2 test.
         parts = re.split(image_pattern, markdown)
 
         for i, part in enumerate(parts):
@@ -57,6 +63,9 @@ class Article:
 
 class ReadabilityExtractor:
     def extract_article(self, html: str) -> Article:
+        # [DL-INSIGHT] Two-tier extraction: use_readability=True shells out to Node's
+        # Readability.js (best quality); on Node failure/absence, retry with the pure-Python
+        # parser. Only Node-process errors trigger fallback — other exceptions propagate.
         try:
             article = simple_json_from_html_string(html, use_readability=True)
         except (subprocess.CalledProcessError, FileNotFoundError) as exc:

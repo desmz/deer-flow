@@ -29,6 +29,9 @@ class PortAllocator:
     """
 
     def __init__(self):
+        # [DL-INSIGHT] Two-layer reservation: the in-process set blocks other *threads*
+        # in THIS process; the live socket-bind in _is_port_available is the only check
+        # against other *processes* (Docker, etc.). Neither alone is sufficient.
         self._lock = threading.Lock()
         self._reserved_ports: set[int] = set()
 
@@ -48,6 +51,10 @@ class PortAllocator:
         # mirrors exactly what Docker does.  Docker binds to 0.0.0.0:PORT;
         # checking only 127.0.0.1 can falsely report a port as available even
         # when Docker already occupies it on the wildcard address.
+        # [DL-WARN] TOCTOU: the `with` closes the probe socket immediately, freeing the
+        # port. Between allocate() returning and the caller actually binding, another
+        # process can grab it — which is exactly why local_backend.py retries on Docker's
+        # "port already allocated". This check is best-effort, not a guarantee.
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             try:
                 s.bind(("0.0.0.0", port))
@@ -71,6 +78,8 @@ class PortAllocator:
         Raises:
             RuntimeError: If no available port is found in the specified range.
         """
+        # [DL-NOTE] Whole scan runs under the lock, including the blocking socket bind in
+        # _is_port_available. Serializes concurrent allocations but keeps check+reserve atomic.
         with self._lock:
             for port in range(start_port, start_port + max_range):
                 if self._is_port_available(port):
@@ -85,6 +94,8 @@ class PortAllocator:
         Args:
             port: The port number to release.
         """
+        # [DL-NOTE] discard (not remove): releasing an unreserved/already-released port is
+        # a silent no-op, so double-release in error paths (see local_backend.py) is safe.
         with self._lock:
             self._reserved_ports.discard(port)
 
@@ -107,6 +118,8 @@ class PortAllocator:
 
 
 # Global port allocator instance for shared use across the application
+# [DL-INSIGHT] Module-level singleton: all get_free_port/release_port calls share one
+# reservation set. Scope is the Python process only — separate workers don't coordinate.
 _global_port_allocator = PortAllocator()
 
 

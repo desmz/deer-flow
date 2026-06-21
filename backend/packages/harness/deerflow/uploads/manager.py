@@ -4,6 +4,10 @@ Pure business logic — no FastAPI/HTTP dependencies.
 Both Gateway and Client delegate to these functions.
 """
 
+# [DL-INSIGHT] Single source of upload security/path logic. Gateway router (HTTP) and
+# DeerFlowClient (embedded) both import these fns, so the symlink/traversal defenses
+# can't be bypassed by using the embedded path. See: backend/app/gateway/routers/uploads.py
+
 import errno
 import os
 import re
@@ -24,6 +28,9 @@ class UnsafeUploadPathError(ValueError):
 
 
 # thread_id must be alphanumeric, hyphens, underscores, or dots only.
+# [DL-WARN] This regex permits dots, so "." and ".." pass validate_thread_id here.
+# It's NOT the last line of defense: get_paths()._validate_thread_id uses a stricter
+# regex (no dots) and rejects them. Defense-in-depth — see: deerflow/config/paths.py:14
 _SAFE_THREAD_ID = re.compile(r"^[a-zA-Z0-9._-]+$")
 
 
@@ -40,6 +47,8 @@ def validate_thread_id(thread_id: str) -> None:
 def get_uploads_dir(thread_id: str) -> Path:
     """Return the uploads directory path for a thread (no side effects)."""
     validate_thread_id(thread_id)
+    # [DL-INSIGHT] user_id is resolved from a contextvar (no-auth → "default"), making
+    # the uploads dir per-user-per-thread isolated. See: deerflow/runtime/user_context.py
     return get_paths().sandbox_uploads_dir(thread_id, user_id=get_effective_user_id())
 
 
@@ -66,6 +75,8 @@ def normalize_filename(filename: str) -> str:
     """
     if not filename:
         raise ValueError("Filename is empty")
+    # [DL-INSIGHT] Path(...).name strips every directory component, so "../../etc/passwd"
+    # collapses to "passwd". This is the primary traversal defense for filenames.
     safe = Path(filename).name
     if not safe or safe in {".", ".."}:
         raise ValueError(f"Filename is unsafe: {filename!r}")
@@ -90,6 +101,8 @@ def claim_unique_filename(name: str, seen: set[str]) -> str:
     Returns:
         A filename not present in *seen* (already added to *seen*).
     """
+    # [DL-NOTE] Mutates `seen` and returns in one call — caller loops over form parts
+    # without tracking claimed names. Prevents duplicate parts truncating each other.
     if name not in seen:
         seen.add(name)
         return name
@@ -109,6 +122,9 @@ def validate_path_traversal(path: Path, base: Path) -> None:
     Raises:
         PathTraversalError: If a path traversal is detected.
     """
+    # [DL-INSIGHT] resolve() follows symlinks + collapses "..", then relative_to() raises
+    # ValueError if the real path escapes base. Catches traversal that survived filename
+    # sanitizing (e.g. a symlinked base_dir component).
     try:
         path.resolve().relative_to(base.resolve())
     except ValueError:
@@ -140,8 +156,13 @@ def open_upload_file_no_symlink(base_dir: Path, filename: str) -> tuple[Path, ob
 
     validate_path_traversal(dest, base_dir)
 
+    # [DL-NOTE] Posix -> True, Windows -> False
     has_nofollow = hasattr(os, "O_NOFOLLOW")
 
+    # [DL-INSIGHT] Threat model: upload dirs are mounted into sandboxes, so a sandbox
+    # process can pre-place a symlink at a *future* upload name. Path.write_bytes would
+    # follow it and overwrite arbitrary host files with gateway privileges. This whole
+    # fn exists to open the dest atomically without following links.
     if has_nofollow:
         # POSIX: O_NOFOLLOW makes open() fail with ELOOP if dest is a symlink.
         flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW
@@ -156,17 +177,24 @@ def open_upload_file_no_symlink(base_dir: Path, filename: str) -> tuple[Path, ob
             raise
 
         try:
+            # [DL-INSIGHT] fstat on the *open fd* (not the path) is race-free: validates
+            # what we actually opened. st_nlink != 1 rejects hardlinks to outside files.
             opened_stat = os.fstat(fd)
             if not stat.S_ISREG(opened_stat.st_mode) or opened_stat.st_nlink != 1:
                 raise UnsafeUploadPathError(f"Upload destination is not an exclusive regular file: {safe_name}")
             os.ftruncate(fd, 0)
             fh = os.fdopen(fd, "wb")
+            # [DL-NOTE] Ownership transfer: fdopen now owns the fd, so set fd=-1 to skip
+            # the finally close. fh.close() will close it; double-close would be a bug.
             fd = -1
         finally:
             if fd >= 0:
                 os.close(fd)
         return dest, fh
 
+    # [DL-WARN] Windows fallback is best-effort, NOT race-free: a narrow TOCTOU window
+    # remains between pre-open lstat and open() (no O_NOFOLLOW). An attacker who can
+    # atomically swap dest for a symlink in that window is not fully stopped here.
     # Windows: no O_NOFOLLOW available. Uses a second lstat immediately before open()
     # to narrow the TOCTOU window, then fstat after open() as a further defence.
     # Note: a narrow race window remains between the pre-open lstat and open(); the
@@ -235,6 +263,8 @@ def list_files_in_dir(directory: Path) -> dict:
     files = []
     with os.scandir(directory) as entries:
         for entry in sorted(entries, key=lambda e: e.name):
+            # [DL-NOTE] follow_symlinks=False here too: a symlink planted in the uploads
+            # dir is silently skipped, not listed as a file (consistent with write path).
             if not entry.is_file(follow_symlinks=False):
                 continue
             st = entry.stat(follow_symlinks=False)
@@ -277,6 +307,8 @@ def delete_file_safe(base_dir: Path, filename: str, *, convertible_extensions: s
 
     file_path.unlink()
 
+    # [DL-NOTE] Deleting e.g. report.pdf also removes report.md (the auto-converted
+    # companion). with_suffix swaps the extension; missing_ok tolerates no conversion.
     # Clean up companion markdown generated during upload conversion.
     if convertible_extensions and file_path.suffix.lower() in convertible_extensions:
         file_path.with_suffix(".md").unlink(missing_ok=True)
@@ -304,6 +336,8 @@ def enrich_file_listing(result: dict, thread_id: str) -> dict:
     """
     for f in result["files"]:
         filename = f["filename"]
+        # [DL-NOTE] size stringified to match the Gateway Pydantic response model (all-str
+        # file dicts). list_files_in_dir keeps it int; enrichment is the API-shape step.
         f["size"] = str(f["size"])
         f["virtual_path"] = upload_virtual_path(filename)
         f["artifact_url"] = upload_artifact_url(thread_id, filename)

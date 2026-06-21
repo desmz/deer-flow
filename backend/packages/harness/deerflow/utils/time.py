@@ -32,6 +32,8 @@ def now_iso() -> str:
 
     Example: ``"2026-04-27T03:19:46.511479+00:00"``.
     """
+    # [DL-INSIGHT] Single funnel for all timestamp generation — keeps wire format aligned
+    # with LangGraph's Thread schema (ISO 8601 UTC) across Gateway, RunManager, checkpoints.
     return datetime.now(UTC).isoformat()
 
 
@@ -48,6 +50,8 @@ def coerce_iso(value: object) -> str:
     """
     if value is None or value == "":
         return ""
+    # [DL-WARN] Order-critical: bool must be checked before int/float (bool IS an int in
+    # Python), else True would coerce to 1970-01-01T00:00:01. datetime before int/float too.
     if isinstance(value, bool):
         # ``bool`` is a subclass of ``int`` — treat as garbage, not 0/1.
         return str(value)
@@ -65,6 +69,8 @@ def coerce_iso(value: object) -> str:
             return datetime.fromtimestamp(float(value), UTC).isoformat()
         except (ValueError, OverflowError, OSError):
             return str(value)
+    # [DL-INSIGHT] Forward-compat read path: legacy records stored str(time.time()). The
+    # 10-digit anchor only rewrites those floats, leaving ISO strings (and "2026") untouched.
     if isinstance(value, str):
         if _UNIX_TIMESTAMP_PATTERN.match(value):
             try:
