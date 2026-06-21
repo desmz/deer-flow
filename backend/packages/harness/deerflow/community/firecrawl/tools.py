@@ -30,6 +30,9 @@ def web_search_tool(query: str) -> str:
         client = _get_firecrawl_client("web_search")
         result = client.search(query, limit=max_results)
 
+        # [DL-NOTE] Structural twin of exa: per-tool config via _get_firecrawl_client(tool_name), SDK env
+        # fallback, "snippet"+bare-array shape and "Error:" string errors (tavily camp). getattr(...) reads
+        # SDK objects defensively — survives FirecrawlApp result-attr renames where exa uses direct access.
         # result.web contains list of SearchResultWeb objects
         web_results = result.web or []
         normalized_results = [
@@ -58,6 +61,9 @@ def web_fetch_tool(url: str) -> str:
         url: The URL to fetch the contents of.
     """
     try:
+        # [DL-INSIGHT] Firecrawl's niche: scrape() returns clean markdown (formats=["markdown"]) — its
+        # value over tavily/exa is rendered-page→markdown conversion, not raw text. No API-level char
+        # cap requested; only the [:4096] client slice applies (contrast exa, which caps at both layers).
         client = _get_firecrawl_client("web_fetch")
         result = client.scrape(url, formats=["markdown"])
 
@@ -70,4 +76,6 @@ def web_fetch_tool(url: str) -> str:
     except Exception as e:
         return f"Error: {str(e)}"
 
+    # [DL-NOTE] Success return sits OUTSIDE the try — title/markdown_content are guaranteed bound here
+    # because every in-try exit (exception or empty content) returns first.
     return f"# {title}\n\n{markdown_content[:4096]}"

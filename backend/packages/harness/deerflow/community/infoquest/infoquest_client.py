@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 class InfoQuestClient:
     """Client for interacting with the InfoQuest web search and fetch API."""
 
+    # [DL-INSIGHT] Opposite of the stateless JinaClient: a STATEFUL, config-tuned client. The tool
+    # layer reads model_extra knobs (search_time_range, image_size, …) and bakes them in at __init__.
+    # [DL-NOTE] -1 is the "unset → use server default" sentinel; only positive values are forwarded.
     def __init__(self, fetch_time: int = -1, fetch_timeout: int = -1, fetch_navigation_timeout: int = -1, search_time_range: int = -1, image_search_time_range: int = -1, image_size: str = "i"):
         logger.info("\n============================================\n🚀 BytePlus InfoQuest Client Initialization 🚀\n============================================")
 
@@ -63,6 +66,9 @@ class InfoQuestClient:
 
         logger.debug("Sending crawl request to InfoQuest API")
         try:
+            # [DL-NOTE] Synchronous `requests`. InfoQuest's tool layer is also sync (`def`), so
+            # LangChain runs it in a threadpool — no explicit to_thread needed. Contrast Jina, which
+            # is async (httpx) and must offload its blocking readability step via asyncio.to_thread.
             response = requests.post("https://reader.infoquest.bytepluses.com", headers=headers, json=data)
 
             # Check if status code is not 200
@@ -77,7 +83,9 @@ class InfoQuestClient:
                 logger.debug("InfoQuest Crawler returned empty response for URL: %s", url)
                 return f"Error: {error_message}"
 
-            # Try to parse response as JSON and extract reader_result
+            # [DL-INSIGHT] Defensive extraction chain against an unstable vendor shape:
+            # reader_result → content → (neither) fall through. Mirrors the SDK-distrust hedging
+            # seen across community adapters (Firecrawl getattr, DDG r.get fallbacks).
             try:
                 response_data = json.loads(response.text)
                 # Extract reader_result if it exists
@@ -89,7 +97,8 @@ class InfoQuestClient:
                     logger.debug("reader_result missing in JSON response, falling back to content field: %s", response_data["content"])
                     return response_data["content"]
                 else:
-                    # If neither field exists, return the original response
+                    # [DL-WARN] "Neither field" path only logs — it does NOT return here. Execution
+                    # falls through to `return response.text` below, handing the model raw JSON.
                     logger.warning("Neither reader_result nor content field found in JSON response")
             except json.JSONDecodeError:
                 # If response is not JSON, return the original text
@@ -114,6 +123,8 @@ class InfoQuestClient:
         }
 
         # Add API key if available
+        # [DL-WARN] Unlike Jina's warn-ONCE flag, this warns on EVERY request when the key is
+        # missing — log spam across a run. Same env-per-call key model, inconsistent noise control.
         if os.getenv("INFOQUEST_API_KEY"):
             headers["Authorization"] = f"Bearer {os.getenv('INFOQUEST_API_KEY')}"
             logger.debug("API key added to request headers")
@@ -164,6 +175,8 @@ class InfoQuestClient:
         if site != "":
             params["site"] = site
 
+        # [DL-WARN] Search RAISES via raise_for_status(), but fetch() checks status_code manually and
+        # returns "Error:". Two error idioms in one client — the raise is caught upstream in web_search.
         response = requests.post("https://search.infoquest.bytepluses.com", headers=headers, json=params)
         response.raise_for_status()
 
@@ -178,6 +191,9 @@ class InfoQuestClient:
     @staticmethod
     def clean_results(raw_results: list[dict[str, dict[str, dict[str, Any]]]]) -> list[dict]:
         """Clean results from InfoQuest Web-Search API."""
+        # [DL-INSIGHT] Normalizer: flattens two result families (organic→type:page, top_stories→
+        # type:news) into one flat list, URL-deduped via seen_urls. Emits BOTH `desc` and `snippet`
+        # (snippet=desc) — a deliberate hedge so it satisfies either the Camp A or Camp B key reader.
         logger.debug("Processing web-search results")
 
         seen_urls = set()
@@ -299,6 +315,9 @@ class InfoQuestClient:
                 images_results = results["images_results"]
                 for result in images_results:
                     clean_result = {}
+                    # [DL-INSIGHT] Uses result["original"] = FULL-RESOLUTION image URL. Directly
+                    # contrasts the ddgs image_search adapter, which returns thumbnails (21a open
+                    # question). InfoQuest's image_search is the higher-fidelity reference source.
                     if "original" in result:
                         clean_result["image_url"] = result["original"]
                         url = clean_result["image_url"]
@@ -306,6 +325,8 @@ class InfoQuestClient:
                             seen_urls.add(url)
                             clean_results.append(clean_result)
                             counts["images"] += 1
+                    # [DL-WARN] title is set AFTER the append above — works only because the dict is
+                    # appended by reference. And an image with no "original" is silently dropped.
                     if "title" in result:
                         clean_result["title"] = result["title"]
         logger.debug(f"Results processing completed | total_results={len(clean_results)} | images={counts['images']} | unique_urls={len(seen_urls)}")
@@ -321,6 +342,8 @@ class InfoQuestClient:
         """Get image search results from the InfoQuest Web-Search API synchronously."""
         headers = self._prepare_headers()
 
+        # [DL-NOTE] Image search reuses the SAME search endpoint as web_search, switched by
+        # search_type="Images" — not a separate API. Params are validated client-side (range/enum).
         params = {"format": output_format, "query": query, "search_type": "Images"}
 
         # Add time_range filter if specified (1-365)

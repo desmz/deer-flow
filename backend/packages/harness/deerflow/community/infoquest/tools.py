@@ -8,6 +8,9 @@ from .infoquest_client import InfoQuestClient
 readability_extractor = ReadabilityExtractor()
 
 
+# [DL-INSIGHT] The only adapter that fills ALL THREE tool slots (web_search/web_fetch/image_search)
+# from one file, backed by one client. Per-tool config like Exa/Firecrawl, but stitched across the
+# three separate config entries below — each tool's model_extra knobs feed one shared client.
 def _get_infoquest_client() -> InfoQuestClient:
     search_config = get_app_config().get_tool_config("web_search")
     search_time_range = -1
@@ -33,6 +36,8 @@ def _get_infoquest_client() -> InfoQuestClient:
     if image_search_config is not None and "image_size" in image_search_config.model_extra:
         image_size = image_search_config.model_extra.get("image_size")
 
+    # [DL-NOTE] Fresh client per call (cheap object). All knobs default to -1/"i" sentinels when the
+    # corresponding config entry or model_extra key is absent → server defaults apply.
     return InfoQuestClient(
         search_time_range=search_time_range,
         fetch_timeout=fetch_timeout,
@@ -43,6 +48,8 @@ def _get_infoquest_client() -> InfoQuestClient:
     )
 
 
+# [DL-NOTE] Sync tool (`def`), unlike Jina's async web_search. Returns the client's cleaned JSON
+# string directly — no readability pass; search results are already structured.
 @tool("web_search", parse_docstring=True)
 def web_search_tool(query: str) -> str:
     """Search the web.
@@ -68,8 +75,11 @@ def web_fetch_tool(url: str) -> str:
     """
     client = _get_infoquest_client()
     result = client.fetch(url)
+    # [DL-NOTE] Errors-as-values short-circuit (note trailing space matches client's "Error: " prefix).
     if result.startswith("Error: "):
         return result
+    # [DL-NOTE] extract_article called directly (no asyncio.to_thread) because this tool is sync —
+    # LangChain already runs it off the main loop. Same 4096-char silent cap as every web_fetch.
     article = readability_extractor.extract_article(result)
     return article.to_markdown()[:4096]
 
@@ -89,5 +99,8 @@ def image_search_tool(query: str) -> str:
     Args:
         query: The query to search for images.
     """
+    # [DL-INSIGHT] Docstring-as-prompt: the verbose "When to use" block is the steering prompt that
+    # makes the model search references before generating — same role as ddgs image_search's docstring,
+    # but here results carry NO usage_hint payload (the client returns bare cleaned JSON).
     client = _get_infoquest_client()
     return client.image_search(query)

@@ -30,6 +30,8 @@ def _search_text(
     Returns:
         List of search results
     """
+    # [DL-INSIGHT] ddgs is imported lazily, not at module top. The optional dependency only loads
+    # when the tool actually runs, so wiring a different provider never forces ddgs to be installed.
     try:
         from ddgs import DDGS
     except ImportError:
@@ -38,6 +40,8 @@ def _search_text(
 
     ddgs = DDGS(timeout=30)
 
+    # [DL-NOTE] region/safesearch are hardcoded defaults here — not surfaced to config or the model,
+    # unlike max_results. Keyless search trades configurability for zero setup.
     try:
         results = ddgs.text(
             query,
@@ -47,6 +51,8 @@ def _search_text(
         )
         return list(results) if results else []
 
+    # [DL-NOTE] All search failures collapse to [] (logged, not raised). The tool layer turns an
+    # empty list into a structured "no results" message — the agent never sees a raw exception.
     except Exception as e:
         logger.error(f"Failed to search web: {e}")
         return []
@@ -65,6 +71,9 @@ def web_search_tool(
     """
     config = get_app_config().get_tool_config("web_search")
 
+    # [DL-INSIGHT] max_results is BOTH a model-facing tool arg (default 5) and a config override.
+    # Config wins when set — the operator can cap the model's requested count. Contrast tavily, which
+    # exposes no model-facing arg and reads max_results only from config.
     # Override max_results from config if set
     if config is not None and "max_results" in config.model_extra:
         max_results = config.model_extra.get("max_results", max_results)
@@ -77,6 +86,9 @@ def web_search_tool(
     if not results:
         return json.dumps({"error": "No results found", "query": query}, ensure_ascii=False)
 
+    # [DL-WARN] Schema drift across adapters: this emits "content" but tavily/exa/firecrawl emit
+    # "snippet" for the same field. The model sees different key names depending on the wired provider.
+    # [DL-NOTE] href/link and body/snippet fallbacks defend against ddgs return-key changes.
     normalized_results = [
         {
             "title": r.get("title", ""),
@@ -86,6 +98,8 @@ def web_search_tool(
         for r in results
     ]
 
+    # [DL-NOTE] Result envelope {query,total_results,results} differs from tavily's bare JSON array —
+    # another inter-adapter inconsistency. serper follows this envelope convention; tavily does not.
     output = {
         "query": query,
         "total_results": len(normalized_results),

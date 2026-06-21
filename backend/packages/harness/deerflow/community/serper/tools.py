@@ -17,9 +17,14 @@ from deerflow.config import get_app_config
 logger = logging.getLogger(__name__)
 
 _SERPER_ENDPOINT = "https://google.serper.dev/search"
+# [DL-NOTE] Module-level warn-once latch: the missing-key warning logs a single time per process,
+# not on every search call. Avoids log spam when the agent searches repeatedly without a key.
 _api_key_warned = False
 
 
+# [DL-INSIGHT] Explicit config-then-env precedence, done in-app (not delegated to an SDK like tavily).
+# Config api_key wins, but only if it's a non-empty/non-whitespace string; otherwise fall back to
+# SERPER_API_KEY env. This guards against api_key: "" or a stray "$VAR" resolving to blank.
 def _get_api_key() -> str | None:
     config = get_app_config().get_tool_config("web_search")
     if config is not None:
@@ -53,12 +58,16 @@ def web_search_tool(query: str, max_results: int = 5) -> str:
             ensure_ascii=False,
         )
 
+    # [DL-NOTE] No vendor SDK — raw Google Serper REST: X-API-KEY auth, {q, num} payload over httpx.
+    # `num` asks the API for max_results, but the response is still sliced below as a safety net.
     headers = {
         "X-API-KEY": api_key,
         "Content-Type": "application/json",
     }
     payload = {"q": query, "num": max_results}
 
+    # [DL-INSIGHT] Two-tier error handling: HTTPStatusError (4xx/5xx, logs status+body) is separated
+    # from any other Exception (network/JSON). Both collapse to structured {"error",...} JSON, never raise.
     try:
         with httpx.Client(timeout=30) as client:
             response = client.post(_SERPER_ENDPOINT, headers=headers, json=payload)
@@ -74,10 +83,14 @@ def web_search_tool(query: str, max_results: int = 5) -> str:
         logger.error(f"Serper search failed: {type(e).__name__}: {e}")
         return json.dumps({"error": str(e), "query": query}, ensure_ascii=False)
 
+    # [DL-NOTE] Serper returns several result blocks (organic, knowledgeGraph, answerBox, ...);
+    # only "organic" is consumed — the others are dropped.
     organic = data.get("organic", [])
     if not organic:
         return json.dumps({"error": "No results found", "query": query}, ensure_ascii=False)
 
+    # [DL-NOTE] Emits "content" + {query,total_results,results} envelope — matches ddg_search, diverges
+    # from tavily's "snippet"/bare-array shape. The [:max_results] re-slices client-side as a backstop.
     normalized_results = [
         {
             "title": r.get("title", ""),

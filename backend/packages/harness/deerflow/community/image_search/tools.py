@@ -48,6 +48,8 @@ def _search_images(
 
     ddgs = DDGS(timeout=30)
 
+    # [DL-NOTE] Optional filters are added to kwargs only when set, so None values are never passed
+    # to ddgs.images() — lets the library apply its own defaults instead of choking on explicit None.
     try:
         kwargs = {
             "region": region,
@@ -74,6 +76,9 @@ def _search_images(
         return []
 
 
+# [DL-INSIGHT] Registered as "image_search", NOT "web_search" — a distinct capability/config slot
+# (config.yaml: name: image_search), not a swappable web_search backend. The verbose docstring is
+# deliberate prompt engineering: the "When to use" guidance steers the model to search refs pre-generation.
 @tool("image_search", parse_docstring=True)
 def image_search_tool(
     query: str,
@@ -116,6 +121,9 @@ def image_search_tool(
     if not results:
         return json.dumps({"error": "No images found", "query": query}, ensure_ascii=False)
 
+    # [DL-WARN] Both image_url and thumbnail_url map to r["thumbnail"] — the full-resolution r["image"]
+    # field from ddgs.images() is never used. "Reference images" are thus low-res thumbnails; likely a bug
+    # (image_url should be r.get("image")). See questions/open-questions.md.
     normalized_results = [
         {
             "title": r.get("title", ""),
@@ -125,6 +133,9 @@ def image_search_tool(
         for r in results
     ]
 
+    # [DL-INSIGHT] usage_hint embeds model-facing guidance INSIDE the tool result, not just the docstring —
+    # the agent is told at result-time how to consume image_url. Result payload doubles as a mini-prompt.
+    # [DL-WARN] there is not dedicated download tool, the agent probably use `bash` tool via curl for downloading the file.
     output = {
         "query": query,
         "total_results": len(normalized_results),

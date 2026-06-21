@@ -6,6 +6,9 @@ from langchain.tools import tool
 from deerflow.config import get_app_config
 
 
+# [DL-INSIGHT] tool_name is parameterized so web_search and web_fetch read SEPARATE config entries
+# (each may carry its own api_key). First adapter to support distinct configs per tool, not one shared.
+# api_key=None lets the Exa SDK fall back to EXA_API_KEY env — same SDK-delegation pattern as tavily.
 def _get_exa_client(tool_name: str = "web_search") -> Exa:
     config = get_app_config().get_tool_config(tool_name)
     api_key = None
@@ -22,6 +25,9 @@ def web_search_tool(query: str) -> str:
         query: The query to search for.
     """
     try:
+        # [DL-INSIGHT] Richest config surface of the search adapters: beyond max_results it reads
+        # search_type (auto/neural/keyword) and contents_max_characters — all carried on model_extra
+        # via the open-schema ToolConfig, proving extras scale to provider-specific knobs with no schema change.
         config = get_app_config().get_tool_config("web_search")
         max_results = 5
         search_type = "auto"
@@ -39,6 +45,8 @@ def web_search_tool(query: str) -> str:
             contents={"highlights": {"max_characters": contents_max_characters}},
         )
 
+        # [DL-NOTE] Neural search returns highlight spans, not one body blob — joined with \n into snippet.
+        # Emits "snippet" + bare array → follows the tavily shape, NOT ddg/serper's "content"+envelope.
         normalized_results = [
             {
                 "title": result.title or "",
@@ -49,6 +57,8 @@ def web_search_tool(query: str) -> str:
         ]
         json_results = json.dumps(normalized_results, indent=2, ensure_ascii=False)
         return json_results
+    # [DL-NOTE] Whole body wrapped in try/except → "Error: ..." string (tavily-style), unlike serper/ddg
+    # which return structured {"error":...} JSON. Confirms two error conventions split along the same camps.
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -65,6 +75,8 @@ def web_fetch_tool(url: str) -> str:
         url: The URL to fetch the contents of.
     """
     try:
+        # [DL-NOTE] Passes "web_fetch" so a distinct config entry (and its own api_key) can apply.
+        # 4096-char cap is requested via the API (text max_characters) AND re-clamped below — double guard.
         client = _get_exa_client("web_fetch")
         res = client.get_contents([url], text={"max_characters": 4096})
 
