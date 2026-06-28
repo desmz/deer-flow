@@ -25,6 +25,8 @@ from app.gateway.services import sse_consumer, start_run
 from deerflow.runtime import RunRecord, serialize_channel_values
 
 logger = logging.getLogger(__name__)
+# [DL-INSIGHT] Runs are modelled as a sub-resource of a thread (/api/threads/{id}/runs/...),
+# mirroring the LangGraph Platform URL scheme so the langgraph-sdk works unmodified.
 router = APIRouter(prefix="/api/threads", tags=["runs"])
 
 
@@ -113,6 +115,9 @@ def _record_to_response(record: RunRecord) -> RunResponse:
 # ---------------------------------------------------------------------------
 
 
+# [DL-INSIGHT] create/stream/wait are three consumption modes over the SAME start_run() call.
+# start_run is fire-and-forget; the difference is only how each endpoint surfaces the result:
+# create → return record immediately, stream → attach SSE, wait → block on record.task.
 @router.post("/{thread_id}/runs", response_model=RunResponse)
 @require_permission("runs", "create", owner_check=True, require_existing=True)
 async def create_run(thread_id: str, body: RunCreateRequest, request: Request) -> RunResponse:
@@ -144,6 +149,7 @@ async def stream_run(thread_id: str, body: RunCreateRequest, request: Request) -
             # LangGraph Platform includes run metadata in this header.
             # The SDK uses a greedy regex to extract the run id from this path,
             # so it must point at the canonical run resource without extra suffixes.
+            # [DL-WARN] Adding any suffix here (e.g. /stream) breaks the SDK's run-id extraction.
             "Content-Location": f"/api/threads/{thread_id}/runs/{record.run_id}",
         },
     )
@@ -155,12 +161,16 @@ async def wait_run(thread_id: str, body: RunCreateRequest, request: Request) -> 
     """Create a run and block until it completes, returning the final state."""
     record = await start_run(body, thread_id, request)
 
+    # [DL-NOTE] Block on the background task; a cancel mid-wait is swallowed so we still
+    # return whatever final state the checkpoint holds rather than erroring out.
     if record.task is not None:
         try:
             await record.task
         except asyncio.CancelledError:
             pass
 
+    # [DL-INSIGHT] Final state comes from the checkpointer (the source of truth for graph
+    # state), not from the RunRecord. The record only carries status/error as a fallback.
     checkpointer = get_checkpointer(request)
     config = {"configurable": {"thread_id": thread_id}}
     try:
@@ -190,6 +200,8 @@ async def get_run(thread_id: str, run_id: str, request: Request) -> RunResponse:
     """Get details of a specific run."""
     run_mgr = get_run_manager(request)
     record = run_mgr.get(run_id)
+    # [DL-INSIGHT] Thread-scoping check: a run_id belonging to another thread is treated as
+    # 404, so the URL hierarchy is enforced — you can't reach a run via the wrong thread.
     if record is None or record.thread_id != thread_id:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
     return _record_to_response(record)
@@ -223,6 +235,8 @@ async def cancel_run(
             detail=f"Run {run_id} is not cancellable (status: {record.status.value})",
         )
 
+    # [DL-NOTE] HTTP semantics encode the wait flag: 204 (No Content) once fully stopped,
+    # 202 (Accepted) when the cancel was requested but the run may still be winding down.
     if wait and record.task is not None:
         try:
             await record.task
@@ -275,9 +289,13 @@ async def stream_existing_run(
     if record is None or record.thread_id != thread_id:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
 
+    # [DL-INSIGHT] Single endpoint serves both joinStream (GET) and the useStream stop button
+    # (POST?action=interrupt): cancel-then-stream lets the client observe a clean shutdown.
     # Cancel if an action was requested (stop-button / interrupt flow)
     if action is not None:
         cancelled = await run_mgr.cancel(run_id, action=action)
+        # [DL-NOTE] CancelledError listed explicitly: it derives from BaseException (not
+        # Exception) since 3.8, so the bare `Exception` would not otherwise catch it.
         if cancelled and wait and record.task is not None:
             try:
                 await record.task
@@ -315,6 +333,8 @@ async def list_thread_messages(
     event_store = get_run_event_store(request)
     messages = await event_store.list_messages(thread_id, limit=limit, before_seq=before_seq, after_seq=after_seq)
 
+    # [DL-INSIGHT] Feedback (thumbs up/down) attaches only to the LAST AI message of each run —
+    # that's the user-facing answer; intermediate AI turns (tool-call steps) get feedback=None.
     # Attach feedback to the last AI message of each run
     feedback_repo = get_feedback_repo(request)
     user_id = await get_current_user(request)
@@ -361,6 +381,8 @@ async def list_run_messages(
 
     Response: { data: [...], has_more: bool }
     """
+    # [DL-INSIGHT] Fetch limit+1 rows to compute has_more without a separate COUNT query:
+    # if the store returns more than `limit`, there's another page; trim the extra row off.
     event_store = get_run_event_store(request)
     rows = await event_store.list_messages_by_run(
         thread_id,
@@ -389,6 +411,8 @@ async def list_run_events(
     return await event_store.list_events(thread_id, run_id, event_types=types, limit=limit)
 
 
+# [DL-NOTE] Permission is keyed on "threads" not "runs" here — token usage is a thread-level
+# aggregate across all runs, so it follows the thread's read permission, unlike the run routes.
 @router.get("/{thread_id}/token-usage", response_model=ThreadTokenUsageResponse)
 @require_permission("threads", "read", owner_check=True)
 async def thread_token_usage(thread_id: str, request: Request) -> ThreadTokenUsageResponse:

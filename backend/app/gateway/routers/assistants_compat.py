@@ -17,6 +17,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
+# [DL-INSIGHT] No auth decorators here — this is a read-only compat shim that the
+# frontend's useStream hook calls during init. It exposes no per-user data.
 router = APIRouter(prefix="/api/assistants", tags=["assistants-compat"])
 
 
@@ -69,6 +71,8 @@ def _list_assistants() -> list[AssistantResponse]:
             assistants.append(
                 AssistantResponse(
                     assistant_id=agent_cfg.name,
+                    # [DL-INSIGHT] Every custom agent maps to the single lead_agent graph;
+                    # the agent identity is a config layer, not a distinct LangGraph graph.
                     graph_id="lead_agent",  # All agents use the same graph
                     name=agent_cfg.name,
                     config={},
@@ -123,6 +127,8 @@ async def get_assistant_graph(assistant_id: str) -> dict:
     if not found:
         raise HTTPException(status_code=404, detail=f"Assistant {assistant_id} not found")
 
+    # [DL-NOTE] Empty graph/schema stubs — Gateway runs LangGraph embedded and does
+    # not expose real introspection; these only satisfy SDK validation calls.
     return {
         "graph_id": "lead_agent",
         "nodes": [],

@@ -7,9 +7,16 @@ from deerflow.config.app_config import AppConfig
 router = APIRouter(prefix="/api", tags=["models"])
 
 
+# [DL-INSIGHT] Single source of truth: this same config.models list both populates the frontend
+# model picker AND is the allowlist start_run validates body.context.model_name against
+# (services.py → app_config.get_model_config). One config drives selection and enforcement.
+# [DL-NOTE] No @require_permission — global AuthMiddleware still requires auth (not a public path),
+# but there's no per-user data here, so any authenticated caller may list models.
 class ModelResponse(BaseModel):
     """Response model for model information."""
 
+    # [DL-NOTE] `name` is DeerFlow's config key (what clients pass as model_name); `model` is the
+    # underlying provider model id. The indirection lets one logical name remap providers via config.
     name: str = Field(..., description="Unique identifier for the model")
     model: str = Field(..., description="Actual provider model identifier")
     display_name: str | None = Field(None, description="Human-readable name")
@@ -73,6 +80,9 @@ async def list_models(config: AppConfig = Depends(get_config)) -> ModelsListResp
         }
         ```
     """
+    # [DL-INSIGHT] Security boundary by explicit field allowlist: ModelConfig uses extra="allow",
+    # so secrets (api_key, base_url) live as extra fields on it. Mapping into ModelResponse — which
+    # only declares safe fields — drops those secrets by omission. A denylist would risk leaking new fields.
     models = [
         ModelResponse(
             name=model.name,
@@ -84,6 +94,8 @@ async def list_models(config: AppConfig = Depends(get_config)) -> ModelsListResp
         )
         for model in config.models
     ]
+    # [DL-NOTE] token_usage piggybacks on the model list so the frontend gets the picker AND the
+    # "show token usage" UI toggle in a single round-trip, rather than a separate settings call.
     return ModelsListResponse(
         models=models,
         token_usage=TokenUsageResponse(enabled=config.token_usage.enabled),

@@ -41,6 +41,8 @@ def _strip_markdown_code_fence(text: str) -> str:
 
 
 def _parse_json_string_list(text: str) -> list[str] | None:
+    # [DL-INSIGHT] Defensive LLM-output parsing: slice from first "[" to last "]"
+    # so surrounding prose/explanations the model adds don't break json.loads.
     candidate = _strip_markdown_code_fence(text)
     start = candidate.find("[")
     end = candidate.rfind("]")
@@ -65,6 +67,8 @@ def _parse_json_string_list(text: str) -> list[str] | None:
 
 
 def _extract_response_text(content: object) -> str:
+    # [DL-NOTE] Normalizes both string content and Anthropic/OpenAI block-list
+    # content ({"type": "text"|"output_text", ...}) into a flat string.
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -101,6 +105,8 @@ def _format_conversation(messages: list[SuggestionMessage]) -> str:
     summary="Generate Follow-up Questions",
     description="Generate short follow-up questions a user might ask next, based on recent conversation context.",
 )
+# [DL-INSIGHT] Stateless LLM call gated by thread ownership — reuses the threads
+# resource ACL even though no thread state is read; conversation comes in the body.
 @require_permission("threads", "read", owner_check=True)
 async def generate_suggestions(
     thread_id: str,
@@ -129,6 +135,8 @@ async def generate_suggestions(
     user_content = f"Conversation Context:\n{conversation}\n\nGenerate {n} follow-up questions"
 
     try:
+        # [DL-NOTE] thinking_enabled=False — suggestions are a cheap follow-up task;
+        # run_name="suggest_agent" tags the call for tracing/observability.
         model = create_chat_model(name=body.model_name, thinking_enabled=False, app_config=config)
         response = await model.ainvoke([SystemMessage(content=system_instruction), HumanMessage(content=user_content)], config={"run_name": "suggest_agent"})
         raw = _extract_response_text(response.content)
@@ -137,5 +145,7 @@ async def generate_suggestions(
         cleaned = cleaned[:n]
         return SuggestionsResponse(suggestions=cleaned)
     except Exception as exc:
+        # [DL-INSIGHT] Graceful degradation: any failure returns [] rather than 500.
+        # Suggestions are a non-critical UI nicety; never break the chat over them.
         logger.exception("Failed to generate suggestions: thread_id=%s err=%s", thread_id, exc)
         return SuggestionsResponse(suggestions=[])

@@ -21,9 +21,13 @@ from app.gateway.services import sse_consumer, start_run
 from deerflow.runtime import serialize_channel_values
 
 logger = logging.getLogger(__name__)
+# [DL-INSIGHT] Sibling of thread_runs.py but runs are NOT nested under a thread here
+# (/api/runs/... vs /api/threads/{id}/runs/...). This is the LangGraph "stateless runs" surface.
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
 
+# [DL-NOTE] "Stateless" is a misnomer when a thread_id is supplied: passing
+# config.configurable.thread_id reuses an existing thread (stateful); omitting it mints a fresh uuid.
 def _resolve_thread_id(body: RunCreateRequest) -> str:
     """Return the thread_id from the request body, or generate a new one."""
     thread_id = (body.config or {}).get("configurable", {}).get("thread_id")
@@ -32,6 +36,8 @@ def _resolve_thread_id(body: RunCreateRequest) -> str:
     return str(uuid.uuid4())
 
 
+# [DL-INSIGHT] No @require_permission here (unlike thread_runs.create_run): AuthMiddleware still
+# enforces 401 globally, but there is no pre-existing thread to owner_check, so route-level guard is skipped.
 @router.post("/stream")
 async def stateless_stream(body: RunCreateRequest, request: Request) -> StreamingResponse:
     """Create a run and stream events via SSE.
@@ -52,6 +58,8 @@ async def stateless_stream(body: RunCreateRequest, request: Request) -> Streamin
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
+            # [DL-NOTE] Created via /api/runs but Content-Location points at the canonical
+            # /api/threads/{id}/runs/{rid} resource so the SDK resolves the run the same way.
             "Content-Location": f"/api/threads/{thread_id}/runs/{record.run_id}",
         },
     )
@@ -93,6 +101,11 @@ async def stateless_wait(body: RunCreateRequest, request: Request) -> dict:
 # ---------------------------------------------------------------------------
 
 
+# [DL-INSIGHT] Ownership enforcement moves to the DATA layer here. With no thread_id in the URL,
+# the decorator can't owner_check; instead run_store.get is expected to scope to the current user
+# via the user contextvar, returning None (→404) for runs owned by someone else.
+# [DL-QUESTION] The RunStore.get(run_id) interface takes no user_id (base.py:42), so this isolation
+# is purely impl-dependent — MemoryRunStore does no filtering, so dev/test mode has no cross-user guard.
 async def _resolve_run(run_id: str, request: Request) -> dict:
     """Fetch run by run_id with user ownership check. Raises 404 if not found."""
     run_store = get_run_store(request)
@@ -102,6 +115,8 @@ async def _resolve_run(run_id: str, request: Request) -> dict:
     return record
 
 
+# [DL-NOTE] require_permission has no owner_check (no thread_id in the path); per-run ownership
+# is instead enforced inside _resolve_run. Pagination uses the same limit+1 has_more trick as thread_runs.
 @router.get("/{run_id}/messages")
 @require_permission("runs", "read")
 async def run_messages(

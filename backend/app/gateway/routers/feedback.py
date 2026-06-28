@@ -24,6 +24,8 @@ router = APIRouter(prefix="/api/threads", tags=["feedback"])
 # ---------------------------------------------------------------------------
 
 
+# [DL-NOTE] Two write shapes: PUT uses Upsert (idempotent, no message_id),
+# POST uses Create (append, can scope to a message_id). See the two endpoints below.
 class FeedbackCreateRequest(BaseModel):
     rating: int = Field(..., description="Feedback rating: +1 (positive) or -1 (negative)")
     comment: str | None = Field(default=None, description="Optional text feedback")
@@ -58,6 +60,8 @@ class FeedbackStatsResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+# [DL-INSIGHT] Mutating routes use require_existing=True: a missing threads_meta row
+# is a 404 denial, so a deleted thread can't be re-targeted via the legacy allow path.
 @router.put("/{thread_id}/runs/{run_id}/feedback", response_model=FeedbackResponse)
 @require_permission("threads", "write", owner_check=True, require_existing=True)
 async def upsert_feedback(
@@ -72,6 +76,8 @@ async def upsert_feedback(
 
     user_id = await get_current_user(request)
 
+    # [DL-INSIGHT] Defense-in-depth beyond owner_check: verify the run actually
+    # belongs to this thread so you can't attach feedback to another thread's run.
     run_store = get_run_store(request)
     run = await run_store.get(run_id)
     if run is None:
@@ -176,7 +182,8 @@ async def delete_feedback(
 ) -> dict[str, bool]:
     """Delete a feedback record."""
     feedback_repo = get_feedback_repo(request)
-    # Verify feedback belongs to the specified thread/run before deleting
+    # [DL-INSIGHT] IDOR guard: feedback_id is global, so confirm it belongs to the
+    # path's thread/run before deleting — owner_check alone wouldn't catch this.
     existing = await feedback_repo.get(feedback_id)
     if existing is None:
         raise HTTPException(status_code=404, detail=f"Feedback {feedback_id} not found")

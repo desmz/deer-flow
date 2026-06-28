@@ -15,9 +15,16 @@ from deerflow.agents.memory.updater import (
 from deerflow.config.memory_config import get_memory_config
 from deerflow.runtime.user_context import get_effective_user_id
 
+# [DL-WARN] Unlike threads/uploads/artifacts, NO endpoint here carries @require_permission.
+# Isolation rests entirely on get_effective_user_id() scoping each call to one user's
+# memory.json. In no-auth mode that's always "default" — so memory is effectively global.
 router = APIRouter(prefix="/api", tags=["memory"])
 
 
+# [DL-INSIGHT] These Pydantic models re-declare the harness memory schema instead of
+# importing it — an anti-corruption boundary. The harness owns the dict shape; the Gateway
+# owns the wire contract, and they're validated to stay in sync via TestGatewayConformance.
+# See: notes/patterns/protocol-mirror-anti-corruption.md
 class ContextSection(BaseModel):
     """Model for context sections (user and history)."""
 
@@ -65,6 +72,9 @@ class MemoryResponse(BaseModel):
 
 def _map_memory_fact_value_error(exc: ValueError) -> HTTPException:
     """Convert updater validation errors into stable API responses."""
+    # [DL-NOTE] String-sentinel contract: the harness updater raises ValueError("confidence")
+    # vs any other ValueError for empty content. The router keys off args[0] to pick the 400
+    # message — a brittle coupling, but it keeps validation logic in the harness layer.
     if exc.args and exc.args[0] == "confidence":
         detail = "Invalid confidence value; must be between 0 and 1."
     else:
@@ -80,6 +90,9 @@ class FactCreateRequest(BaseModel):
     confidence: float = Field(default=0.5, ge=0.0, le=1.0, description="Confidence score (0-1)")
 
 
+# [DL-INSIGHT] PATCH vs POST split: every field is Optional and defaults to None, where
+# None means "leave unchanged" (not "set to null"). The harness updater only writes fields
+# that arrive non-None — true partial update, distinct from the all-required FactCreateRequest.
 class FactPatchRequest(BaseModel):
     """PATCH request model that preserves existing values for omitted fields."""
 
@@ -110,6 +123,8 @@ class MemoryStatusResponse(BaseModel):
 @router.get(
     "/memory",
     response_model=MemoryResponse,
+    # [DL-NOTE] exclude_none drops null fields (e.g. fact.sourceError) from the JSON so the
+    # payload stays lean; it's set on every read endpoint for a consistent wire shape.
     response_model_exclude_none=True,
     summary="Get Memory Data",
     description="Retrieve the current global memory data including user context, history, and facts.",
@@ -198,6 +213,8 @@ async def clear_memory() -> MemoryResponse:
 )
 async def create_memory_fact_endpoint(request: FactCreateRequest) -> MemoryResponse:
     """Create a single fact manually."""
+    # [DL-INSIGHT] Read-after-write: every mutation returns the FULL memory state, not just
+    # the changed fact. The client never needs a follow-up GET to resync — one round trip.
     try:
         memory_data = create_memory_fact(
             content=request.content,
@@ -268,6 +285,8 @@ async def update_memory_fact_endpoint(fact_id: str, request: FactPatchRequest) -
 )
 async def export_memory() -> MemoryResponse:
     """Export the current memory data."""
+    # [DL-NOTE] Functionally identical to GET /memory; exists as a distinct, intention-
+    # revealing route for backup/transfer tooling (pairs with POST /memory/import).
     memory_data = get_memory_data(user_id=get_effective_user_id())
     return MemoryResponse(**memory_data)
 
@@ -281,6 +300,8 @@ async def export_memory() -> MemoryResponse:
 )
 async def import_memory(request: MemoryResponse) -> MemoryResponse:
     """Import and persist memory data."""
+    # [DL-WARN] The request body reuses MemoryResponse and FULLY OVERWRITES stored memory —
+    # not a merge. Combined with no auth decorator, any caller can replace a user's memory.
     try:
         memory_data = import_memory_data(request.model_dump(), user_id=get_effective_user_id())
     except OSError as exc:

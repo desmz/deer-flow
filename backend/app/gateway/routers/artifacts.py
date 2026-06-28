@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["artifacts"])
 
+# [DL-INSIGHT] "Active content" = anything a browser will execute scripts from. These
+# are ALWAYS forced to download (never inline), so agent-generated HTML/SVG can't run
+# JS in the app's own origin and steal the session. SVG counts — it can carry <script>.
 ACTIVE_CONTENT_MIME_TYPES = {
     "text/html",
     "application/xhtml+xml",
@@ -49,6 +52,9 @@ def is_text_file_by_content(path: Path, sample_size: int = 8192) -> bool:
 
 def _read_skill_archive_member(zip_ref: zipfile.ZipFile, info: zipfile.ZipInfo) -> bytes:
     """Read a .skill archive member while enforcing an uncompressed size cap."""
+    # [DL-WARN] Zip-bomb defense, two layers: first reject on the declared uncompressed
+    # size (info.file_size), then re-check the running total while streaming — because a
+    # crafted header can lie about file_size. Both raise 413.
     if info.file_size > MAX_SKILL_ARCHIVE_MEMBER_BYTES:
         raise HTTPException(status_code=413, detail="Skill archive member is too large to preview")
 
@@ -85,6 +91,9 @@ def _extract_file_from_skill_archive(zip_path: Path, internal_path: str) -> byte
             if internal_path in infos_by_name:
                 return _read_skill_archive_member(zip_ref, infos_by_name[internal_path])
 
+            # [DL-NOTE] Skill archives are often wrapped in one top-level dir (skill-name/),
+            # so a request for "SKILL.md" also matches "skill-name/SKILL.md". Suffix match
+            # on "/"+internal_path keeps it anchored to a path segment, not a substring.
             # Try with any top-level directory prefix (e.g., "skill-name/SKILL.md")
             for name, info in infos_by_name.items():
                 if name.endswith("/" + internal_path) or name == internal_path:
@@ -135,6 +144,9 @@ async def get_artifact(thread_id: str, path: str, request: Request, download: bo
         - Download file: `/api/threads/abc123/artifacts/mnt/user-data/outputs/data.csv?download=true`
         - Active web content such as `.html`, `.xhtml`, and `.svg` artifacts is always downloaded
     """
+    # [DL-INSIGHT] Dual-mode endpoint. A path containing ".skill/" reads a member from
+    # INSIDE the .skill ZIP (transparent archive browsing); otherwise it serves a real
+    # file from disk. The split point is the ".skill" extension boundary in the URL.
     # Check if this is a request for a file inside a .skill archive (e.g., xxx.skill/SKILL.md)
     if ".skill/" in path:
         # Split the path at ".skill/" to get the ZIP file path and internal path
@@ -158,6 +170,8 @@ async def get_artifact(thread_id: str, path: str, request: Request, download: bo
 
         # Determine MIME type based on the internal file
         mime_type, _ = mimetypes.guess_type(internal_path)
+        # [DL-NOTE] ZIP extraction is costly, so archive members get a 5-min private cache.
+        # Disk files below get NO cache header — they may change between runs.
         # Add cache headers to avoid repeated ZIP extraction (cache for 5 minutes)
         cache_headers = {"Cache-Control": "private, max-age=300"}
         download_name = Path(internal_path).name or actual_skill_path.stem
@@ -173,6 +187,9 @@ async def get_artifact(thread_id: str, path: str, request: Request, download: bo
         except UnicodeDecodeError:
             return Response(content=content, media_type=mime_type or "application/octet-stream", headers=cache_headers)
 
+    # [DL-INSIGHT] All traversal/escape defense is centralized here: resolve_virtual_path
+    # validates the path stays inside the thread's per-user dir and raises 403 on traversal,
+    # 400 on malformed. The router never does raw path math. See: app/gateway/path_utils.py
     actual_path = resolve_thread_virtual_path(thread_id, path)
 
     logger.info(f"Resolving artifact path: thread_id={thread_id}, requested_path={path}, actual_path={actual_path}")
@@ -196,6 +213,9 @@ async def get_artifact(thread_id: str, path: str, request: Request, download: bo
     if mime_type and mime_type.startswith("text/"):
         return PlainTextResponse(content=actual_path.read_text(encoding="utf-8"), media_type=mime_type)
 
+    # [DL-NOTE] Content sniffing fallback: when mimetypes can't classify a file (no/unknown
+    # extension), peek for null bytes — text gets shown inline, binary falls through to the
+    # raw Response with inline disposition. A pragmatic guess where the extension is silent.
     if is_text_file_by_content(actual_path):
         return PlainTextResponse(content=actual_path.read_text(encoding="utf-8"), media_type=mime_type)
 

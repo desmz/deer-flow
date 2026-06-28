@@ -24,6 +24,10 @@ from app.gateway.authz import require_permission
 from app.gateway.deps import get_checkpointer
 from app.gateway.utils import sanitize_log_param
 from deerflow.config.paths import Paths, get_paths
+
+# [DL-NOTE] serialize_channel_values converts LangChain message objects → JSON-safe dicts in the
+# exact LangGraph Platform wire format the frontend `useStream` hook expects. This is what makes the
+# Gateway a drop-in replacement for LangGraph Platform on the /api/langgraph/* routes.
 from deerflow.runtime import serialize_channel_values
 from deerflow.runtime.user_context import get_effective_user_id
 from deerflow.utils.time import coerce_iso, now_iso
@@ -38,6 +42,8 @@ router = APIRouter(prefix="/api/threads", tags=["threads"])
 # owner identity through the API surface. Defense-in-depth — the
 # row-level invariant is still ``threads_meta.user_id`` populated from
 # the auth contextvar; this list closes the metadata-blob echo gap.
+# [DL-INSIGHT] Ownership is never trusted from client metadata — it lives in a
+# server-controlled column. This frozenset is the second layer that prevents echo-back spoofing.
 _SERVER_RESERVED_METADATA_KEYS: frozenset[str] = frozenset({"owner_id", "user_id"})
 
 
@@ -102,6 +108,9 @@ class ThreadSearchRequest(BaseModel):
             return v
         from deerflow.persistence.json_compat import validate_metadata_filter_key, validate_metadata_filter_value
 
+        # [DL-WARN] These validators are the SQL-injection / unsupported-type firewall for
+        # search. Keys feed JSON path expressions; rejecting bad keys/values here keeps the
+        # SQL and memory backends behaviourally identical and prevents uncompilable filters.
         bad_entries: list[str] = []
         for key, value in v.items():
             if not validate_metadata_filter_key(key):
@@ -185,6 +194,8 @@ def _delete_thread_data(thread_id: str, paths: Paths | None = None, *, user_id: 
     return ThreadDeleteResponse(success=True, message=f"Deleted local thread data for {thread_id}")
 
 
+# [DL-INSIGHT] Status is *derived* from live checkpoint state, never stored as a field.
+# error = a pending __error__ write; interrupted = pending tasks (e.g. ask_clarification); else idle.
 def _derive_thread_status(checkpoint_tuple) -> str:
     """Derive thread status from checkpoint metadata."""
     if checkpoint_tuple is None:
@@ -220,6 +231,8 @@ async def delete_thread_data(thread_id: str, request: Request) -> ThreadDeleteRe
     """
     from app.gateway.deps import get_thread_store
 
+    # [DL-NOTE] Deletion fans out to three stores: filesystem, checkpointer, thread_meta.
+    # Only the filesystem step is fatal; checkpoint + meta removal are best-effort (logged, not raised).
     # Clean local filesystem
     response = _delete_thread_data(thread_id, user_id=get_effective_user_id())
 
@@ -271,6 +284,8 @@ async def create_thread(body: ThreadCreateRequest, request: Request) -> ThreadRe
             metadata=existing_record.get("metadata", {}),
         )
 
+    # [DL-INSIGHT] Dual-write on create: a thread_meta row (so /search lists it) AND an empty
+    # checkpoint (so /state and /history work immediately, before any run has produced state).
     # Write thread_meta so the thread appears in /threads/search immediately
     try:
         await thread_store.create(
@@ -401,6 +416,9 @@ async def get_thread(thread_id: str, request: Request) -> ThreadResponse:
     if record is None and checkpoint_tuple is None:
         raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
 
+    # [DL-INSIGHT] Backward-compat bridge: threads predating thread_meta exist only as
+    # checkpoints. Rather than 404, synthesize a meta record from checkpoint metadata so the
+    # API surface is uniform across legacy and current threads. (read routes only — see require_existing)
     # If the thread exists in the checkpointer but not in thread_meta (e.g.
     # legacy data created before thread_meta adoption), synthesize a minimal
     # record from the checkpoint metadata.
@@ -520,6 +538,8 @@ async def update_thread_state(thread_id: str, body: ThreadStateUpdateRequest, re
     if checkpoint_tuple is None:
         raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
 
+    # [DL-WARN] aget_tuple may return objects shared with an in-memory cache; copying into
+    # fresh dicts before mutating prevents corrupting that cached state under the memory backend.
     # Work on mutable copies so we don't accidentally mutate cached objects.
     checkpoint: dict[str, Any] = dict(getattr(checkpoint_tuple, "checkpoint", {}) or {})
     metadata: dict[str, Any] = dict(getattr(checkpoint_tuple, "metadata", {}) or {})
@@ -536,6 +556,8 @@ async def update_thread_state(thread_id: str, body: ThreadStateUpdateRequest, re
         metadata["step"] = metadata.get("step", 0) + 1
         metadata["writes"] = {body.as_node: body.values}
 
+    # [DL-INSIGHT] Omitting checkpoint_id on aput is deliberate: it forces a *new* checkpoint
+    # appended to history (HITL resume / title rename = a new branchable snapshot, not an in-place edit).
     # aput requires checkpoint_ns in the config — use the same config used for the
     # read (which always includes checkpoint_ns="").  Do NOT include checkpoint_id
     # so that aput generates a fresh checkpoint ID for the new snapshot.
@@ -555,6 +577,8 @@ async def update_thread_state(thread_id: str, body: ThreadStateUpdateRequest, re
     if isinstance(new_config, dict):
         new_checkpoint_id = new_config.get("configurable", {}).get("checkpoint_id")
 
+    # [DL-NOTE] Title lives in two places: the checkpoint channel_values AND the thread_meta
+    # display_name. This write keeps the /search projection in sync with the canonical checkpoint.
     # Sync title changes through the ThreadMetaStore abstraction so /threads/search
     # reflects them immediately in both sqlite and memory backends.
     if body.values and "title" in body.values:
@@ -614,6 +638,9 @@ async def get_thread_history(thread_id: str, body: ThreadHistoryRequest, request
             if thread_data := channel_values.get("thread_data"):
                 values["thread_data"] = thread_data
 
+            # [DL-INSIGHT] Messages are attached to the latest checkpoint only — the full message
+            # list is large and identical-ish across checkpoints, so duplicating it per entry would
+            # bloat the response. Older entries carry just title/thread_data + metadata.
             # Attach messages only to the latest checkpoint entry.
             if is_latest_checkpoint:
                 messages = channel_values.get("messages")

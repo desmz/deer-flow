@@ -18,6 +18,13 @@ from deerflow.skills.types import SKILL_MD_FILE, SkillCategory
 
 logger = logging.getLogger(__name__)
 
+# [DL-INSIGHT] Like models.py: Depends(get_config) DI and NO @require_permission. But unlike models,
+# many endpoints here MUTATE (install/enable/edit/delete/rollback) a GLOBAL, config-driven skills dir
+# (not per-user) — so any authenticated user edits skills shared by everyone. No per-resource authz.
+# [DL-INSIGHT] Recurring pattern: every mutation ends with refresh_skills_system_prompt_cache_async().
+# Enabled skills are baked into the lead agent's cached system prompt (prompt.py _enabled_skills_cache),
+# so a write that skipped this refresh would leave the agent running a stale skill set until restart.
+# (Contrast: agents.py SOUL.md writes do NOT invalidate any cache — see its open question.)
 router = APIRouter(prefix="/api", tags=["skills"])
 
 
@@ -125,6 +132,9 @@ async def install_skill(request: SkillInstallRequest, config: AppConfig = Depend
         raise HTTPException(status_code=500, detail=f"Failed to install skill: {str(e)}")
 
 
+# [DL-WARN] All /skills/custom and /skills/custom/{name}/* routes are declared BEFORE the generic
+# /skills/{skill_name} (further down). FastAPI matches in order, so "custom" must be registered first
+# or it would be captured as skill_name="custom". Public/bundled skills are read-only; only custom edit.
 @router.get("/skills/custom", response_model=SkillsListResponse, summary="List Custom Skills")
 async def list_custom_skills(config: AppConfig = Depends(get_config)) -> SkillsListResponse:
     try:
@@ -138,6 +148,8 @@ async def list_custom_skills(config: AppConfig = Depends(get_config)) -> SkillsL
 @router.get("/skills/custom/{skill_name}", response_model=CustomSkillContentResponse, summary="Get Custom Skill Content")
 async def get_custom_skill(skill_name: str, config: AppConfig = Depends(get_config)) -> CustomSkillContentResponse:
     try:
+        # [DL-NOTE] Newline stripping on the path param defends against log/header injection and
+        # name spoofing via embedded CR/LF. Applied on every endpoint that takes skill_name.
         skill_name = skill_name.replace("\r\n", "").replace("\n", "")
         skills = get_or_new_skill_storage(app_config=config).load_skills(enabled_only=False)
         skill = next((s for s in skills if s.name == skill_name and s.category == SkillCategory.CUSTOM), None)
@@ -163,6 +175,9 @@ async def update_custom_skill(skill_name: str, request: CustomSkillUpdateRequest
             raise HTTPException(status_code=400, detail=f"Security scan blocked the edit: {scan.reason}")
         prev_content = storage.read_custom_skill(skill_name)
         storage.write_custom_skill(skill_name, SKILL_MD_FILE, request.content)
+        # [DL-INSIGHT] Skills get a lightweight VCS: every mutation appends a history record with
+        # prev_content/new_content, enabling the /rollback endpoint. author="human" + thread_id=None
+        # distinguishes UI edits here from the agent's own edits via skill_manage_tool (author="agent").
         storage.append_history(
             skill_name,
             {
@@ -258,6 +273,9 @@ async def rollback_custom_skill(skill_name: str, request: SkillRollbackRequest, 
             "rollback_from_ts": record.get("ts"),
             "scanner": {"decision": scan.decision, "reason": scan.reason},
         }
+        # [DL-INSIGHT] Even old content is re-scanned on rollback (the scanner's ruleset may have
+        # tightened since it was first written). [DL-NOTE] On block, the denied attempt is still
+        # appended to history before raising — the audit trail records rejected operations too.
         if scan.decision == "block":
             storage.append_history(skill_name, history_entry)
             raise HTTPException(status_code=400, detail=f"Rollback blocked by security scanner: {scan.reason}")
@@ -321,6 +339,10 @@ async def update_skill(skill_name: str, request: SkillUpdateRequest, config: App
             config_path = Path.cwd().parent / "extensions_config.json"
             logger.info(f"No existing extensions config found. Creating new config at: {config_path}")
 
+        # [DL-INSIGHT] Two-store model: skill *content* lives in the skills dir; skill *enabled-state*
+        # lives in extensions_config.json (alongside mcpServers). Toggling enabled writes the config file,
+        # not the skill. [DL-WARN] Read-modify-write of the ENTIRE file (mcpServers + all skills) with no
+        # lock — a concurrent MCP/skill update could clobber the other's change (last-writer-wins).
         extensions_config = get_extensions_config()
         extensions_config.skills[skill_name] = SkillStateConfig(enabled=request.enabled)
 

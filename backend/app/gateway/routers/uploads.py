@@ -31,6 +31,8 @@ from deerflow.utils.file_conversion import CONVERTIBLE_EXTENSIONS, convert_file_
 
 logger = logging.getLogger(__name__)
 
+# [DL-INSIGHT] Uploads are thread-scoped: the prefix nests under /api/threads/{thread_id}.
+# A file has no identity outside its (per-user, per-thread) isolation boundary.
 router = APIRouter(prefix="/api/threads/{thread_id}/uploads", tags=["uploads"])
 
 UPLOAD_CHUNK_SIZE = 8192
@@ -69,6 +71,8 @@ def _make_file_sandbox_writable(file_path: os.PathLike[str] | str) -> None:
         logger.warning("Skipping sandbox chmod for symlinked upload path: %s", file_path)
         return
 
+    # [DL-WARN] Grants world-writable (o+w) so the sandbox-runtime user can rewrite the
+    # mounted file. Tolerable only because uploads live in per-user isolated dirs.
     writable_mode = stat.S_IMODE(file_stat.st_mode) | stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
     chmod_kwargs = {"follow_symlinks": False} if os.chmod in os.supports_follow_symlinks else {}
     os.chmod(file_path, writable_mode, **chmod_kwargs)
@@ -87,6 +91,8 @@ def _get_uploads_config_value(app_config: AppConfig, key: str, default: object) 
 
 
 def _get_upload_limit(app_config: AppConfig, key: str, default: int, *, legacy_key: str | None = None) -> int:
+    # [DL-NOTE] legacy_key supports config migration: old configs used max_file_count /
+    # max_single_file_size. New keys win; old keys are the fallback before the default.
     try:
         value = _get_uploads_config_value(app_config, key, None)
         if value is None and legacy_key is not None:
@@ -129,6 +135,9 @@ async def _write_upload_file_with_limits(
     max_total_size: int,
     total_size: int,
 ) -> tuple[os.PathLike[str] | str, int, int]:
+    # [DL-INSIGHT] total_size is threaded in and back out, so the max_total_size cap
+    # accumulates across every file in the request — not per-file. Streamed in 8KB
+    # chunks so an oversized file is rejected mid-stream, never fully buffered in memory.
     file_size = 0
     file_path, fh = open_upload_file_no_symlink(uploads_dir, display_filename)
     try:
@@ -158,6 +167,8 @@ def _auto_convert_documents_enabled(app_config: AppConfig) -> bool:
     The secure default is disabled unless an operator explicitly opts in via
     uploads.auto_convert_documents in config.yaml.
     """
+    # [DL-INSIGHT] Secure-by-default: host-side doc conversion (markitdown) is OFF unless
+    # an operator opts in — conversion runs untrusted file bytes through a parser.
     try:
         raw = _get_uploads_config_value(app_config, "auto_convert_documents", False)
         if isinstance(raw, str):
@@ -168,6 +179,8 @@ def _auto_convert_documents_enabled(app_config: AppConfig) -> bool:
 
 
 @router.post("", response_model=UploadResponse)
+# [DL-INSIGHT] require_existing=False: you may upload to a thread before it exists — the
+# UI attaches files, then the first run materializes the thread. owner_check still applies.
 @require_permission("threads", "write", owner_check=True, require_existing=False)
 async def upload_files(
     thread_id: str,
@@ -198,6 +211,8 @@ async def upload_files(
     # overwrite behavior for a single replacement upload.
     seen_filenames: set[str] = set()
 
+    # [DL-INSIGHT] Two sandbox strategies: thread_data-mount providers expose the uploads
+    # dir to the sandbox directly (no copy); others need an explicit update_file() push below.
     sandbox_provider = get_sandbox_provider()
     sync_to_sandbox = not _uses_thread_data_mounts(sandbox_provider)
     sandbox = None
@@ -264,6 +279,9 @@ async def upload_files(
 
             uploaded_files.append(file_info)
 
+        # [DL-INSIGHT] Two failure tiers. HTTPException (size/count limits) or an unexpected
+        # error aborts the whole request and rolls back every written path. An unsafe single
+        # destination only skips that file (skipped_files) and the loop continues.
         except HTTPException as e:
             _cleanup_uploaded_paths(written_paths)
             raise e
@@ -276,6 +294,8 @@ async def upload_files(
             _cleanup_uploaded_paths(written_paths)
             raise HTTPException(status_code=500, detail=f"Failed to upload {file.filename}: {str(e)}")
 
+    # [DL-INSIGHT] Sandbox push happens once after ALL files land on the host, not per-file,
+    # so a mid-request rejection never leaves half-synced files visible in the sandbox.
     if sync_to_sandbox:
         for file_path, virtual_path in sandbox_sync_targets:
             _make_file_sandbox_writable(file_path)
@@ -285,6 +305,8 @@ async def upload_files(
     if skipped_files:
         message += f"; skipped {len(skipped_files)} unsafe file(s)"
 
+    # [DL-NOTE] success=False when any file was skipped, yet the request still 200s with
+    # the successfully-uploaded subset — partial success, unlike the hard-abort limit errors.
     return UploadResponse(
         success=not skipped_files,
         files=uploaded_files,

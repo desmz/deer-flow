@@ -14,6 +14,11 @@ from deerflow.config.paths import get_paths
 from deerflow.runtime.user_context import get_effective_user_id
 
 logger = logging.getLogger(__name__)
+# [DL-NOTE] Prefix is bare "/api" (not "/api/agents") because this router also owns the
+# global /user-profile (USER.md) routes, which aren't agent-scoped.
+# [DL-INSIGHT] Auth model differs from the run routers: NO @require_permission and no `request`
+# param. Access is gated by _require_agents_api_enabled() (a config flag) and the user is resolved
+# from the ambient contextvar via get_effective_user_id() — request-scoped, so no request.state needed.
 router = APIRouter(prefix="/api", tags=["agents"])
 
 AGENT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9-]+$")
@@ -126,6 +131,8 @@ async def list_agents() -> AgentsListResponse:
         raise HTTPException(status_code=500, detail=f"Failed to list agents: {str(e)}")
 
 
+# [DL-WARN] /agents/check MUST be registered before /agents/{name} — FastAPI matches routes in
+# declaration order, so the literal "check" path would otherwise be swallowed by the {name} param.
 @router.get(
     "/agents/check",
     summary="Check Agent Name",
@@ -148,6 +155,9 @@ async def check_agent_name(name: str) -> dict:
     normalized = _normalize_agent_name(name)
     user_id = get_effective_user_id()
     paths = get_paths()
+    # [DL-INSIGHT] Dual-path check (per-user + legacy shared) recurs across create/check/update/delete:
+    # the per-user layout (users/{uid}/agents/{name}) is canonical, but the pre-isolation shared
+    # layout (agents/{name}) must still be consulted so a future migration can't silently clobber names.
     # Treat the name as taken if either the per-user path or the legacy shared
     # path holds an agent — picking a name that collides with an unmigrated
     # legacy agent would shadow the legacy entry once migration runs.
@@ -249,6 +259,8 @@ async def create_agent_endpoint(request: AgentCreateRequest) -> AgentResponse:
     except HTTPException:
         raise
     except Exception as e:
+        # [DL-NOTE] Best-effort atomicity: a half-written agent dir is rmtree'd on failure so a
+        # partial create (config.yaml but no SOUL.md) can't leave a corrupt agent behind.
         # Clean up on failure
         if agent_dir.exists():
             shutil.rmtree(agent_dir)
@@ -294,6 +306,10 @@ async def update_agent(name: str, request: AgentUpdateRequest) -> AgentResponse:
         )
 
     try:
+        # [DL-INSIGHT] True PATCH semantics via Pydantic's model_fields_set: it records which keys
+        # the client actually sent, so "omitted" (keep existing) is distinguishable from "sent as null".
+        # This is what lets `skills` be tri-state — None=inherit-all, []=none, [...]=whitelist — which a
+        # plain `is None` check could never express (it would conflate "omit" with "set to all").
         # Update config if any config fields changed
         # Use model_fields_set to distinguish "field omitted" from "explicitly set to null".
         # This is critical for skills where None means "inherit all" (not "don't change").
@@ -342,6 +358,9 @@ async def update_agent(name: str, request: AgentUpdateRequest) -> AgentResponse:
         raise HTTPException(status_code=500, detail=f"Failed to update agent: {str(e)}")
 
 
+# [DL-WARN] USER.md is GLOBAL ({base_dir}/USER.md), not per-user — unlike agents and memory which
+# live under users/{user_id}/. In a multi-user deployment every user shares (and can overwrite) the
+# same profile that's injected into all custom agents. See open-questions for the isolation asymmetry.
 class UserProfileResponse(BaseModel):
     """Response model for the global user profile (USER.md)."""
 

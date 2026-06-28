@@ -132,7 +132,6 @@
 | Path                                     | Status | Notes                                                                                         |
 | ---------------------------------------- | ------ | --------------------------------------------------------------------------------------------- |
 | `backend/app/gateway/app.py`             | `[x]`  | FastAPI app bootstrap: lifespan, middleware, router mounting                                  |
-| `backend/app/gateway/routers/`           | `[x]`  | All HTTP route handlers (agents, auth, channels, runs, threads, etc.) — documented separately |
 | `backend/app/gateway/deps.py`            | `[x]`  | Dependency injection: config and services flowing into handlers                               |
 | `backend/app/gateway/services.py`        | `[x]`  | Service abstraction layer                                                                     |
 | `backend/app/gateway/csrf_middleware.py` | `[x]`  | CSRF protection middleware                                                                    |
@@ -140,11 +139,70 @@
 | `backend/app/gateway/path_utils.py`      | `[x]`  | Virtual → physical path resolution                                                            |
 | `backend/app/gateway/utils.py`           | `[x]`  | Log injection sanitizer                                                                       |
 
+**Routers (`backend/app/gateway/routers/`):**
+
+| Path                                                | Status | Notes                                                                                       |
+| --------------------------------------------------- | ------ | ------------------------------------------------------------------------------------------- |
+| `backend/app/gateway/routers/threads.py`            | `[x]`  | Thread CRUD + message history; the central conversation resource                            |
+| `backend/app/gateway/routers/thread_runs.py`        | `[x]`  | Run endpoints scoped to a specific thread                                                    |
+| `backend/app/gateway/routers/runs.py`               | `[x]`  | Agent run lifecycle: create, stream (SSE), cancel                                            |
+| `backend/app/gateway/routers/agents.py`             | `[x]`  | CRUD for custom agent definitions                                                            |
+| `backend/app/gateway/routers/models.py`             | `[x]`  | Lists available models and provider/config metadata                                         |
+| `backend/app/gateway/routers/skills.py`             | `[x]`  | Skill management: list, install, enable/disable                                              |
+| `backend/app/gateway/routers/uploads.py`            | `[x]`  | File upload endpoints into the per-user sandbox                                              |
+| `backend/app/gateway/routers/artifacts.py`          | `[x]`  | Serves generated artifacts/files back to the client                                          |
+| `backend/app/gateway/routers/memory.py`             | `[x]`  | Per-user memory CRUD endpoints                                                               |
+| `backend/app/gateway/routers/suggestions.py`        | `[x]`  | Prompt / follow-up suggestion endpoints                                                      |
+| `backend/app/gateway/routers/feedback.py`           | `[x]`  | User feedback submission endpoints                                                           |
+| `backend/app/gateway/routers/assistants_compat.py`  | `[x]`  | OpenAI Assistants API compatibility shim                                                     |
+| `backend/app/gateway/routers/auth.py`               | `[x]`  | Authentication endpoints — annotated in §06                                                  |
+| `backend/app/gateway/routers/mcp.py`                | `[x]`  | MCP server management API — annotated in §14                                                 |
+| `backend/app/gateway/routers/channels.py`           | `[x]`  | IM channel management API — annotated in §19                                                 |
+
 **Notes files:**
 
 - `notes/modules/05a-gateway-api.md` — app bootstrap, middleware, deps, services (all files except routers/)
 - `notes/modules/05b-api-endpoints-overview.md` — overview of all 14 API sets + flat endpoint index
 - `notes/modules/05-api-reference/` — per-router detailed API reference (auth, agents, assistants, threads, runs, feedback, uploads, artifacts, suggestions, models, skills, memory, mcp, channels)
+
+**Study order:**
+
+Phase 0 — Bootstrap and shared infrastructure (read before any router so the wiring is clear):
+
+1. `app.py` — FastAPI app bootstrap: lifespan, middleware registration, router mounting
+2. `deps.py` — dependency injection: how config and services flow into handlers
+3. `services.py` — service abstraction layer the routers call into
+4. `csrf_middleware.py` · `config.py` · `path_utils.py` · `utils.py` — cross-cutting middleware and helpers
+
+Phase 1 — Core conversation surface (the primary user-facing flow):
+
+5. `routers/threads.py` — thread CRUD + message history; the central resource everything else hangs off
+6. `routers/thread_runs.py` — run endpoints scoped to a thread
+7. `routers/runs.py` — agent run lifecycle: create, stream (SSE), cancel
+
+Phase 2 — Agent and model configuration:
+
+8. `routers/agents.py` — custom agent definition CRUD
+9. `routers/models.py` — available model listing and config metadata
+10. `routers/skills.py` — skill management: list, install, enable/disable
+
+Phase 3 — Content, files, and memory:
+
+11. `routers/uploads.py` — file upload into the per-user sandbox
+12. `routers/artifacts.py` — serves generated artifacts back to the client
+13. `routers/memory.py` — per-user memory CRUD
+
+Phase 4 — Auxiliary endpoints:
+
+14. `routers/suggestions.py` — prompt / follow-up suggestions
+15. `routers/feedback.py` — user feedback submission
+16. `routers/assistants_compat.py` — OpenAI Assistants API compatibility shim
+
+Phase 5 — Integration routers (already annotated in their own sections; re-read here for how they mount into the gateway):
+
+17. `routers/auth.py` [already annotated §06]
+18. `routers/mcp.py` [already annotated §14]
+19. `routers/channels.py` [already annotated §19]
 
 ---
 
